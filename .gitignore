@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 trades.log
 주식투자*
+*.pdf
