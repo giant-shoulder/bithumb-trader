@@ -1,0 +1,7 @@
+.env
+venv/
+.claude/
+__pycache__/
+*.pyc
+trades.log
+주식투자*
