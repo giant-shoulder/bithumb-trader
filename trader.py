@@ -9,8 +9,8 @@ from bithumb_api import BithumbAPI
 from strategy import HongStrategy
 from logger import get_logger, TradeLogger
 from config import (
-    WATCHLIST, MAX_POSITION_KRW, BUY_UNIT_KRW,
-    BUY_SPLIT, POLLING_INTERVAL, MIN_VOLUME_RANK
+    MAX_POSITION_KRW, BUY_UNIT_KRW, BUY_SPLIT,
+    POLLING_INTERVAL, MOMENTUM_TOP_N, MIN_VOLUME_24H_KRW
 )
 
 logger = get_logger()
@@ -44,14 +44,36 @@ class Position:
 
 
 class AutoTrader:
-    def __init__(self):
+    def __init__(self, dry_run: bool = False):
         self.api = BithumbAPI()
         self.strategy = HongStrategy()
-        self.positions: dict[str, Position] = {}  # 보유 포지션
+        self.positions: dict[str, Position] = {}
         self.is_running = False
+        self.dry_run = dry_run
         logger.info("=" * 50)
         logger.info("빗섬 자동매매 시스템 시작 (홍인기 전략)")
         logger.info("=" * 50)
+        self._load_existing_positions()
+
+    def _load_existing_positions(self):
+        """시작 시 실제 보유 코인을 포지션으로 로드"""
+        try:
+            accounts = self.api.get_accounts()
+            for acc in accounts:
+                coin = acc.get('currency')
+                balance = float(acc.get('balance', 0))
+                avg_price = float(acc.get('avg_buy_price', 0))
+                if coin == 'KRW' or coin == 'P' or balance <= 0 or avg_price <= 0:
+                    continue
+                self.positions[coin] = Position(
+                    coin=coin,
+                    buy_price=avg_price,
+                    quantity=balance,
+                    total_amount=avg_price * balance,
+                )
+                logger.info(f"[기존 포지션 로드] {coin}: {balance:.6f}개 @ {avg_price:,.0f}원")
+        except Exception as e:
+            logger.error(f"기존 포지션 로드 실패: {e}")
 
     # ===== 메인 루프 =====
 
@@ -107,14 +129,17 @@ class AutoTrader:
     # ===== 거래대금 상위 코인 =====
 
     def _get_top_coins(self) -> list:
-        """거래대금 상위 코인 목록 조회"""
-        return self.api.get_volume_ranking(WATCHLIST, top_n=MIN_VOLUME_RANK * 2)
+        """전체 KRW 종목 모멘텀 스캔"""
+        return self.api.scan_momentum_coins(
+            min_volume_24h=MIN_VOLUME_24H_KRW,
+            top_n=MOMENTUM_TOP_N
+        )
 
     def _log_market_overview(self, top_coins: list):
         """시장 현황 로그"""
-        logger.info("거래대금 상위 코인:")
+        logger.info("모멘텀 상위 코인:")
         for i, c in enumerate(top_coins[:5], 1):
-            logger.info(f"  {i}위 {c['coin']}: {c['volume_krw']/1e8:.1f}억 | {c['change_pct']:+.1f}%")
+            logger.info(f"  {i}위 {c['coin']}: {c['volume_krw']/1e8:.1f}억 | {c['change_pct']:+.1f}% | 스코어={c['score']:.2e}")
 
     # ===== 포지션 관리 (매도) =====
 
@@ -124,6 +149,7 @@ class AutoTrader:
             return
 
         coins_to_sell = []
+        # 스캔 결과 내 순위 (없으면 999 → 모멘텀 소멸로 간주)
         volume_rank_map = {c['coin']: i+1 for i, c in enumerate(top_coins)}
 
         for coin, pos in self.positions.items():
@@ -140,7 +166,7 @@ class AutoTrader:
                 pos.highest_price = current_price
 
             pnl_pct = (current_price - pos.buy_price) / pos.buy_price * 100
-            rank = volume_rank_map.get(coin, 99)
+            rank = volume_rank_map.get(coin, 999)
 
             signal = self.strategy.check_sell_signal(
                 coin, df, pos.buy_price, current_price, rank, pos.highest_price
@@ -158,12 +184,22 @@ class AutoTrader:
     def _execute_sell(self, coin: str, pos: Position, price: float, reason: str):
         """매도 실행"""
         logger.info(f"[매도 실행] {coin} | 사유: {reason}")
-        result = self.api.sell_market(coin, pos.quantity)
+        if self.dry_run:
+            logger.info(f"[DRY] 매도 생략: {coin} {pos.quantity}")
+            del self.positions[coin]
+            return
+        # 실제 잔고 조회 (추적 수량과 오차 방지)
+        actual_qty = self.api.get_coin_balance(coin)
+        if actual_qty <= 0:
+            logger.warning(f"[{coin}] 실제 잔고 없음, 포지션 제거")
+            del self.positions[coin]
+            return
+        result = self.api.sell_market(coin, actual_qty)
         if result:
             pnl_pct = (price - pos.buy_price) / pos.buy_price * 100
             trade_logger.log_trade(
-                coin, "매도", price, pos.quantity,
-                pos.quantity * price, pnl_pct, reason
+                coin, "매도", price, actual_qty,
+                actual_qty * price, pnl_pct, reason
             )
             del self.positions[coin]
             logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}%")
@@ -171,26 +207,31 @@ class AutoTrader:
     # ===== 신규 매수 탐색 =====
 
     def _scan_for_entry(self, top_coins: list):
-        """신규 매수 후보 탐색"""
-        # 이미 보유 중인 코인 제외
+        """신규 매수 후보 탐색 - 조건 통과 종목 중 RSI 가장 낮은 것 선택"""
         candidates = [c for c in top_coins if c['coin'] not in self.positions]
 
-        for i, coin_data in enumerate(candidates[:MIN_VOLUME_RANK]):
+        buy_candidates = []
+        for coin_data in candidates:
             coin = coin_data['coin']
-            rise_rate = coin_data['change_pct']
-            rank = i + 1
-
             df = self.api.get_ohlcv(coin, interval="1h", count=200)
             if df is None:
                 continue
 
-            signal = self.strategy.check_buy_signal(coin, df, rank, rise_rate)
+            signal = self.strategy.check_buy_signal(coin, df, coin_data['score'])
 
             if signal['buy']:
-                logger.info(f"[매수 신호] {coin} | {' | '.join(signal['reasons'])}")
-                self._execute_buy(coin, coin_data['price'])
+                buy_candidates.append((coin_data, signal))
+                logger.info(f"[매수 후보] {coin} | RSI={signal['rsi']:.1f} | {' | '.join(signal['reasons'])}")
             else:
                 logger.debug(f"[{coin}] 매수 보류: {', '.join(signal['fail_reasons'])}")
+
+        if not buy_candidates:
+            return
+
+        # RSI 가장 낮은 것 선택 (추가 상승 여력 최대)
+        best_coin_data, best_signal = min(buy_candidates, key=lambda x: x[1]['rsi'])
+        logger.info(f"[최종 선택] {best_coin_data['coin']} | RSI={best_signal['rsi']:.1f}")
+        self._execute_buy(best_coin_data['coin'], best_coin_data['price'])
 
     def _execute_buy(self, coin: str, price: float):
         """매수 실행"""
@@ -206,11 +247,19 @@ class AutoTrader:
         else:
             # 신규 매수
             krw_balance = self.api.get_krw_balance()
-            if krw_balance < BUY_UNIT_KRW:
-                logger.warning(f"원화 잔고 부족: {krw_balance:,.0f}원 (필요: {BUY_UNIT_KRW:,.0f}원)")
+            MIN_ORDER_KRW = 5000  # 빗썸 최소 주문금액
+            if krw_balance < MIN_ORDER_KRW:
+                logger.warning(f"원화 잔고 부족: {krw_balance:,.0f}원 (최소: {MIN_ORDER_KRW:,}원)")
                 return
-            logger.info(f"[신규 매수] {coin} | 1/{BUY_SPLIT}회차")
-            krw = BUY_UNIT_KRW
+            krw = min(BUY_UNIT_KRW, int(krw_balance * 0.995))
+            if krw < BUY_UNIT_KRW:
+                logger.info(f"[신규 매수] {coin} | 1/{BUY_SPLIT}회차 (잔고 맞춤: {krw:,.0f}원)")
+            else:
+                logger.info(f"[신규 매수] {coin} | 1/{BUY_SPLIT}회차")
+
+        if self.dry_run:
+            logger.info(f"[DRY] 매수 생략: {coin} {krw:,.0f}원")
+            return
 
         result = self.api.buy_market(coin, krw)
         if result:

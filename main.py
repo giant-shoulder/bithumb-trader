@@ -24,15 +24,15 @@ def main():
     if args.dry:
         logger.info("⚠️  모의 실행 모드 (실제 주문 없음)")
 
-    trader = AutoTrader()
+    trader = AutoTrader(dry_run=args.dry)
 
     if args.status:
         print(trader.get_status())
         return
 
     logger.info("자동매매 시작. 중단하려면 Ctrl+C")
-    logger.info(f"설정: 종목당 최대 {trader.api.__class__.__name__} | "
-                f"분할매수 {trader.positions.__class__.__name__}회")
+    from config import MAX_POSITION_KRW, BUY_SPLIT
+    logger.info(f"설정: 종목당 최대 {MAX_POSITION_KRW:,}원 | 분할매수 {BUY_SPLIT}회")
 
     try:
         trader.run()

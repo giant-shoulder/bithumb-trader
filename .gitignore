@@ -4,5 +4,7 @@ venv/
 __pycache__/
 *.pyc
 trades.log
+trade_history_*.csv
+trader.pid
 주식투자*
 *.pdf

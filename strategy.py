@@ -6,8 +6,9 @@ import pandas as pd
 import numpy as np
 from config import (
     MA_SHORT, MA_MID1, MA_MID2, MA_LONG,
-    MIN_RISE_RATE, MIN_VOLUME_RANK,
+    RSI_BUY_MIN, RSI_BUY_MAX,
     BULLISH_CANDLE_MIN, PREV_HIGH_PERIOD,
+    MOMENTUM_TOP_N,
     STOP_LOSS_PCT,
     TRAILING_STOP_TRIGGER, TRAILING_STOP_PCT,
     RSI_PERIOD, RSI_OVERBOUGHT,
@@ -175,49 +176,68 @@ class HongStrategy:
 
     # ===== 종합 매수 신호 =====
 
-    def check_buy_signal(self, coin: str, df: pd.DataFrame, volume_rank: int,
-                         rise_rate: float) -> dict:
-        """매수 신호 종합 판단"""
+    def check_buy_signal(self, coin: str, df: pd.DataFrame, momentum_score: float) -> dict:
+        """매수 신호 종합 판단 (동적 스캔 기반)
+
+        필수 조건:
+          1. MA5 > MA20 (단기 상승 추세)
+          2. RSI 40~65 (모멘텀 있되 과열 아님)
+          3. 가격 > BB 중간선 (상승 편향)
+
+        가산 조건 (보너스):
+          4. 거래대금 급증
+          5. 전고점 돌파
+          6. 정배열 (MA5 > MA20 > MA60)
+        """
         result = {
             'coin': coin,
             'buy': False,
+            'rsi': 0.0,
             'reasons': [],
             'fail_reasons': []
         }
 
-        # 1. 거래대금 순위
-        if volume_rank > MIN_VOLUME_RANK:
-            result['fail_reasons'].append(f"거래대금 {volume_rank}위 (기준: {MIN_VOLUME_RANK}위 이내)")
+        if len(df) < BB_PERIOD:
+            result['fail_reasons'].append("데이터 부족")
             return result
-        result['reasons'].append(f"거래대금 {volume_rank}위 ✓")
 
-        # 3. 상승률
-        if rise_rate < MIN_RISE_RATE:
-            result['fail_reasons'].append(f"상승률 {rise_rate:.1f}% (기준: {MIN_RISE_RATE}% 이상)")
+        ma5 = self.calc_ma(df, MA_SHORT).iloc[-1]
+        ma20 = self.calc_ma(df, MA_MID1).iloc[-1]
+        rsi_cur, _ = self.calc_rsi(df)
+        _, bb_mid, _ = self.calc_bollinger_bands(df)
+        current_price = df['close'].iloc[-1]
+
+        result['rsi'] = rsi_cur
+
+        # 1. MA5 > MA20 (필수)
+        if ma5 <= ma20:
+            result['fail_reasons'].append(f"MA5({ma5:.0f}) ≤ MA20({ma20:.0f})")
             return result
-        result['reasons'].append(f"상승률 {rise_rate:.1f}% ✓")
+        result['reasons'].append("MA5 > MA20 ✓")
 
-        # 4. 정배열
-        if not self.is_bullish_alignment(df):
-            result['fail_reasons'].append("정배열 불충족")
+        # 2. RSI 매수 구간 (필수)
+        if not (RSI_BUY_MIN <= rsi_cur <= RSI_BUY_MAX):
+            result['fail_reasons'].append(f"RSI {rsi_cur:.1f} (기준: {RSI_BUY_MIN}~{RSI_BUY_MAX})")
             return result
-        result['reasons'].append("정배열 ✓")
+        result['reasons'].append(f"RSI {rsi_cur:.1f} ✓")
 
-        # 5. 장대양봉
-        if not self.is_bullish_candle(df):
-            result['fail_reasons'].append(f"장대양봉 불충족 (기준: {BULLISH_CANDLE_MIN}% 이상)")
+        # 3. 가격 > BB 중간선 (필수)
+        if current_price <= bb_mid:
+            result['fail_reasons'].append(f"가격({current_price:.0f}) ≤ BB중간({bb_mid:.0f})")
             return result
-        result['reasons'].append("장대양봉 ✓")
+        result['reasons'].append("BB 중간선 위 ✓")
 
-        # 6. 전고점 돌파
-        if not self.is_breaking_high(df):
-            result['fail_reasons'].append("전고점 미돌파")
-            return result
-        result['reasons'].append("전고점 돌파 ✓")
-
-        # 7. 거래대금 급증 (선택 조건 - 가산점)
+        # 4. 거래대금 급증 (보너스)
         if self.is_volume_surge(df):
             result['reasons'].append("거래대금 급증 ✓")
+
+        # 5. 전고점 돌파 (보너스)
+        if self.is_breaking_high(df):
+            result['reasons'].append("전고점 돌파 ✓")
+
+        # 6. 정배열 (보너스)
+        if self.is_bullish_alignment(df):
+            result['reasons'].append("정배열 ✓")
 
         result['buy'] = True
         return result
@@ -272,10 +292,10 @@ class HongStrategy:
             result['reason'] = f"MACD 데드크로스 (수익 {pct:+.1f}%)"
             return result
 
-        # 6. 대장 코인 교체
-        if volume_rank > MIN_VOLUME_RANK * 2:
+        # 6. 모멘텀 소멸 (스캔 상위권 이탈)
+        if volume_rank > MOMENTUM_TOP_N * 2:
             result['sell'] = True
-            result['reason'] = f"대장 코인 교체: 현재 {volume_rank}위"
+            result['reason'] = f"모멘텀 소멸: 스캔 {volume_rank}위 밖"
             return result
 
         return result

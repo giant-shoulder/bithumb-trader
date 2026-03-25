@@ -11,16 +11,11 @@ load_dotenv()
 BITHUMB_ACCESS_KEY = os.environ.get("BITHUMB_ACCESS_KEY", "여기에_액세스키_입력")
 BITHUMB_SECRET_KEY = os.environ.get("BITHUMB_SECRET_KEY", "여기에_시크릿키_입력")
 
-# ===== 거래 대상 코인 =====
-# 빗섬에서 거래 가능한 주요 코인 목록
-WATCHLIST = [
-    "BTC", "ETH", "XRP", "SOL", "ADA",
-    "DOGE", "MATIC", "AVAX", "LINK", "DOT",
-    "UNI", "ATOM", "LTC", "BCH", "ETC",
-    "SAND", "MANA", "AXS", "THETA", "VET"
-]
+# ===== 동적 종목 스캔 =====
+MIN_VOLUME_24H_KRW = 2_000_000_000  # 최소 24h 거래대금 (20억 KRW)
+MOMENTUM_TOP_N = 20                  # 심층 분석 상위 N개
 
-# ===== 전략 파라미터 (홍인기 전략) =====
+# ===== 전략 파라미터 =====
 # 이동평균
 MA_SHORT = 5      # 단기
 MA_MID1 = 20      # 중기1
@@ -28,8 +23,8 @@ MA_MID2 = 60      # 중기2
 MA_LONG = 120     # 장기
 
 # 매수 조건
-MIN_RISE_RATE = 5.0          # 최소 상승률 (%)
-MIN_VOLUME_RANK = 5          # 거래대금 상위 몇 위 이내
+RSI_BUY_MIN = 40             # 매수 RSI 하한 (과매도 제외)
+RSI_BUY_MAX = 65             # 매수 RSI 상한 (과열 제외)
 BULLISH_CANDLE_MIN = 3.0     # 장대양봉 최소 크기 (시가 대비 %)
 PREV_HIGH_PERIOD = 120       # 전고점 기간 (캔들 수)
 
@@ -54,5 +49,5 @@ BB_PERIOD = 20
 BB_STD = 2.0
 
 # ===== 루프 설정 =====
-POLLING_INTERVAL = 60         # 전략 실행 주기 (초)
+POLLING_INTERVAL = 10         # 전략 실행 주기 (초)
 LOG_FILE = "trades.log"       # 로그 파일명
