@@ -186,8 +186,11 @@ class BithumbAPI:
         try:
             accounts = self.get_accounts()
             if not isinstance(accounts, list):
+                logger.warning(f"계좌 응답 비정상: {accounts}")
                 return 0.0
             for acc in accounts:
+                if not isinstance(acc, dict):
+                    continue
                 if acc.get('currency') == 'KRW':
                     return float(acc.get('balance', 0))
             return 0.0
@@ -202,6 +205,8 @@ class BithumbAPI:
             if not isinstance(accounts, list):
                 return 0.0
             for acc in accounts:
+                if not isinstance(acc, dict):
+                    continue
                 if acc.get('currency') == coin:
                     return float(acc.get('balance', 0))
             return 0.0
