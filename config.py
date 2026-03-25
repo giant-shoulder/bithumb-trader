@@ -34,11 +34,14 @@ BUY_SPLIT = 5                # 불타기 분할 횟수
 BUY_UNIT_KRW = MAX_POSITION_KRW // BUY_SPLIT  # 1회 매수 금액
 
 # 손절
-STOP_LOSS_PCT = -1.0         # 손절 기준 (%)
+STOP_LOSS_PCT = -2.0         # 손절 기준 (%)
 
 # 트레일링 스탑
-TRAILING_STOP_TRIGGER = 0.8  # 트레일링 스탑 활성화 기준 (%)
-TRAILING_STOP_PCT = 0.4      # 고점 대비 하락 허용폭 (%)
+TRAILING_STOP_TRIGGER = 1.5  # 트레일링 스탑 활성화 기준 (%)
+TRAILING_STOP_PCT = 0.8      # 고점 대비 하락 허용폭 (%)
+
+# 최소 보유 시간
+MIN_HOLD_SECONDS = 180       # 매수 후 최소 보유 시간 (초)
 
 # RSI
 RSI_PERIOD = 14

@@ -10,7 +10,8 @@ from strategy import HongStrategy
 from logger import get_logger, TradeLogger
 from config import (
     MAX_POSITION_KRW, BUY_UNIT_KRW, BUY_SPLIT,
-    POLLING_INTERVAL, MOMENTUM_TOP_N, MIN_VOLUME_24H_KRW
+    POLLING_INTERVAL, MOMENTUM_TOP_N, MIN_VOLUME_24H_KRW,
+    MIN_HOLD_SECONDS
 )
 
 logger = get_logger()
@@ -170,6 +171,12 @@ class AutoTrader:
 
             pnl_pct = (current_price - pos.buy_price) / pos.buy_price * 100
             rank = volume_rank_map.get(coin, 999)
+
+            # 최소 보유시간 체크
+            hold_secs = (datetime.now() - datetime.strptime(pos.entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
+            if hold_secs < MIN_HOLD_SECONDS:
+                logger.debug(f"[{coin}] 최소 보유시간 미충족: {hold_secs:.0f}s / {MIN_HOLD_SECONDS}s")
+                continue
 
             signal = self.strategy.check_sell_signal(
                 coin, df, pos.buy_price, current_price, rank, pos.highest_price

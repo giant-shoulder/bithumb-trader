@@ -286,13 +286,7 @@ class HongStrategy:
             result['reason'] = f"볼린저 밴드 상단 도달 (수익 {pct:+.1f}%)"
             return result
 
-        # 5. MACD 데드크로스
-        if self.should_sell_macd(df):
-            result['sell'] = True
-            result['reason'] = f"MACD 데드크로스 (수익 {pct:+.1f}%)"
-            return result
-
-        # 6. 모멘텀 소멸 (스캔 상위권 이탈)
+        # 5. 모멘텀 소멸 (스캔 상위권 이탈)
         if volume_rank > MOMENTUM_TOP_N * 2:
             result['sell'] = True
             result['reason'] = f"모멘텀 소멸: 스캔 {volume_rank}위 밖"
