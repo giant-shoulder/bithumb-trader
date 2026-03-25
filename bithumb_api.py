@@ -185,6 +185,8 @@ class BithumbAPI:
         """원화 잔고"""
         try:
             accounts = self.get_accounts()
+            if not isinstance(accounts, list):
+                return 0.0
             for acc in accounts:
                 if acc.get('currency') == 'KRW':
                     return float(acc.get('balance', 0))
@@ -197,6 +199,8 @@ class BithumbAPI:
         """코인 잔고"""
         try:
             accounts = self.get_accounts()
+            if not isinstance(accounts, list):
+                return 0.0
             for acc in accounts:
                 if acc.get('currency') == coin:
                     return float(acc.get('balance', 0))

@@ -59,6 +59,9 @@ class AutoTrader:
         """시작 시 실제 보유 코인을 포지션으로 로드"""
         try:
             accounts = self.api.get_accounts()
+            if not isinstance(accounts, list):
+                logger.warning(f"계좌 조회 응답 오류: {accounts}")
+                return
             for acc in accounts:
                 coin = acc.get('currency')
                 balance = float(acc.get('balance', 0))
