@@ -1,5 +1,5 @@
 """
-홍인기 단타 전략 - 코인 버전
+Claude 단타 전략 - 코인 버전
 핵심: 거래대금 1등 + 정배열 + 장대양봉 돌파 매수
 """
 import pandas as pd
@@ -22,8 +22,8 @@ from logger import get_logger
 logger = get_logger()
 
 
-class HongStrategy:
-    """홍인기 단타 전략"""
+class ClaudeStrategy:
+    """Claude 단타 전략"""
 
     # ===== 이동평균 =====
 

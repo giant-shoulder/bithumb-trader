@@ -1,6 +1,6 @@
 """
 빗섬 자동매매 - 메인 진입점
-홍인기 단타 전략
+Claude 단타 전략
 
 실행 방법:
   python main.py          # 실전 매매
@@ -16,7 +16,7 @@ logger = get_logger()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="빗섬 자동매매 - 홍인기 전략")
+    parser = argparse.ArgumentParser(description="빗섬 자동매매 - Claude 전략")
     parser.add_argument("--dry", action="store_true", help="모의 실행 (실제 주문 없음)")
     parser.add_argument("--status", action="store_true", help="현재 상태 확인 후 종료")
     args = parser.parse_args()

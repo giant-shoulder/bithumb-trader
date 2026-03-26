@@ -1,12 +1,12 @@
 """
 자동매매 실행 엔진
-홍인기 전략 기반 빗섬 자동매매
+Claude 전략 기반 빗섬 자동매매
 """
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from bithumb_api import BithumbAPI
-from strategy import HongStrategy
+from strategy import ClaudeStrategy
 from logger import get_logger, TradeLogger
 from config import (
     MAX_POSITION_KRW, BUY_UNIT_KRW, BUY_SPLIT,
@@ -49,7 +49,7 @@ class Position:
 class AutoTrader:
     def __init__(self, dry_run: bool = False):
         self.api = BithumbAPI()
-        self.strategy = HongStrategy()
+        self.strategy = ClaudeStrategy()
         self.positions: dict[str, Position] = {}
         self.sell_cooldown: dict[str, float] = {}
         self.is_running = False
@@ -57,7 +57,7 @@ class AutoTrader:
         self.daily_pnl_krw = 0.0
         self.daily_reset_date = datetime.now().date()
         logger.info("=" * 50)
-        logger.info("빗섬 자동매매 시스템 시작 (홍인기 전략)")
+        logger.info("빗섬 자동매매 시스템 시작 (Claude 전략)")
         logger.info("=" * 50)
         self._load_existing_positions()
 
