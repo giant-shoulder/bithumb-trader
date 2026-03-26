@@ -3,7 +3,9 @@
 """
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+KST = timezone(timedelta(hours=9))
 from config import LOG_FILE
 
 
@@ -37,8 +39,8 @@ def get_logger(name: str = "bithumb_trader") -> logging.Logger:
 class TradeLogger:
     """거래 기록 전용 로거"""
     def __init__(self):
-        self.trade_file = f"trade_history_{datetime.now().strftime('%Y%m')}.csv"
-        self.reject_file = f"reject_history_{datetime.now().strftime('%Y%m')}.csv"
+        self.trade_file = f"trade_history_{datetime.now(KST).strftime('%Y%m')}.csv"
+        self.reject_file = f"reject_history_{datetime.now(KST).strftime('%Y%m')}.csv"
 
         if not os.path.exists(self.trade_file):
             with open(self.trade_file, 'w', encoding='utf-8') as f:
@@ -51,7 +53,7 @@ class TradeLogger:
     def log_trade(self, coin: str, trade_type: str, price: float,
                   quantity: float, amount: float, pnl_pct: float = 0.0,
                   reason: str = "", source: str = "momentum"):
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
         with open(self.trade_file, 'a', encoding='utf-8') as f:
             f.write(f"{now},{coin},{trade_type},{price:.2f},{quantity:.6f},"
                     f"{amount:.0f},{pnl_pct:.2f},{reason},{source}\n")
@@ -61,6 +63,6 @@ class TradeLogger:
         )
 
     def log_reject(self, coin: str, reason: str, price: float):
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
         with open(self.reject_file, 'a', encoding='utf-8') as f:
             f.write(f"{now},{coin},{reason},{price:.2f}\n")
