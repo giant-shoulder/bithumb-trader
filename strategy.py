@@ -10,6 +10,7 @@ from config import (
     BULLISH_CANDLE_MIN, PREV_HIGH_PERIOD,
     MOMENTUM_TOP_N,
     ATR_PERIOD,
+    HARD_TAKE_PROFIT_PCT,
     HARD_STOP_ATR_MULT, HARD_STOP_MIN_PCT, HARD_STOP_MAX_PCT,
     BREAKEVEN_TRIGGER_ATR, TRAILING_PHASE2_ATR,
     PROFIT_TRIGGER_ATR, TRAILING_PHASE3_ATR,
@@ -319,6 +320,12 @@ class HongStrategy:
 
         # Phase 판단 (ATR 배수 기준)
         gain_in_atr = pct / atr_pct if atr_pct > 0 else 0
+
+        # === 하드 익절 (모든 Phase 공통) ===
+        if pct >= HARD_TAKE_PROFIT_PCT:
+            result['sell'] = True
+            result['reason'] = f"하드 익절: {pct:.2f}% (기준: +{HARD_TAKE_PROFIT_PCT}%)"
+            return result
 
         # === 하드 손절 (모든 Phase 공통) ===
         if pct <= -hard_stop:

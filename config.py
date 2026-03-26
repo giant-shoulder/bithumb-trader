@@ -70,3 +70,4 @@ LOG_FILE = "trades.log"       # 로그 파일명
 
 # ===== 리스크 관리 =====
 DAILY_LOSS_LIMIT_PCT = 5.0    # 일일 최대 손실 한도 (원금 대비 %)
+HARD_TAKE_PROFIT_PCT = 4.0    # 하드 익절선 (%) - 이 이상 수익 시 무조건 전량 매도
