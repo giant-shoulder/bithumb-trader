@@ -43,6 +43,9 @@ TRAILING_STOP_PCT = 0.8      # 고점 대비 하락 허용폭 (%)
 # 최소 보유 시간
 MIN_HOLD_SECONDS = 180       # 매수 후 최소 보유 시간 (초)
 
+# 매도 후 재매수 금지 시간
+BUY_COOLDOWN_SECONDS = 600   # 매도 후 동일 코인 재매수 금지 시간 (초)
+
 # RSI
 RSI_PERIOD = 14
 RSI_OVERBOUGHT = 72

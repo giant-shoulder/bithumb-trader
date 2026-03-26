@@ -11,7 +11,7 @@ from logger import get_logger, TradeLogger
 from config import (
     MAX_POSITION_KRW, BUY_UNIT_KRW, BUY_SPLIT,
     POLLING_INTERVAL, MOMENTUM_TOP_N, MIN_VOLUME_24H_KRW,
-    MIN_HOLD_SECONDS
+    MIN_HOLD_SECONDS, BUY_COOLDOWN_SECONDS
 )
 
 logger = get_logger()
@@ -49,6 +49,7 @@ class AutoTrader:
         self.api = BithumbAPI()
         self.strategy = HongStrategy()
         self.positions: dict[str, Position] = {}
+        self.sell_cooldown: dict[str, float] = {}
         self.is_running = False
         self.dry_run = dry_run
         logger.info("=" * 50)
@@ -212,13 +213,22 @@ class AutoTrader:
                 actual_qty * price, pnl_pct, reason
             )
             del self.positions[coin]
-            logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}%")
+            self.sell_cooldown[coin] = time.time() + BUY_COOLDOWN_SECONDS
+            logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}% | 재매수 금지: {BUY_COOLDOWN_SECONDS}초")
 
     # ===== 신규 매수 탐색 =====
 
     def _scan_for_entry(self, top_coins: list):
         """신규 매수 후보 탐색 - 조건 통과 종목 중 RSI 가장 낮은 것 선택"""
-        candidates = [c for c in top_coins if c['coin'] not in self.positions]
+        now = time.time()
+        candidates = [
+            c for c in top_coins
+            if c['coin'] not in self.positions
+            and now > self.sell_cooldown.get(c['coin'], 0)
+        ]
+        cooldown_skipped = [c['coin'] for c in top_coins if c['coin'] not in self.positions and now <= self.sell_cooldown.get(c['coin'], 0)]
+        if cooldown_skipped:
+            logger.info(f"[쿨다운 중] {', '.join(cooldown_skipped)}")
 
         buy_candidates = []
         for coin_data in candidates:
