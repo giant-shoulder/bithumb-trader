@@ -297,12 +297,7 @@ class AutoTrader:
                 logger.info(f"[텔레그램] {coin} 캔들 데이터 없음")
                 continue
 
-            buy_signal = self.strategy.check_buy_signal(coin, df, score=0)
-            if not buy_signal['buy']:
-                logger.info(f"[텔레그램] {coin} 기술적 분석 미통과: {', '.join(buy_signal['fail_reasons'])}")
-                continue
-
-            # 오더북 체크
+            # 오더북만 체크 (텔레그램 신호 자체가 빗썸의 분석 결과)
             orderbook = self.api.get_orderbook(coin)
             trades = self.api.get_recent_trades(coin, count=100)
             pressure = self.strategy.check_buy_pressure(orderbook, trades)
@@ -310,7 +305,7 @@ class AutoTrader:
                 logger.info(f"[텔레그램] {coin} 오더북 미통과: {pressure['reason']}")
                 continue
 
-            logger.info(f"[텔레그램 매수] {coin} | 모든 조건 통과 → 매수 실행")
+            logger.info(f"[텔레그램 매수] {coin} | {pressure['reason']} → 매수 실행")
             self._execute_buy(coin, price)
 
     # ===== 신규 매수 탐색 =====
