@@ -392,12 +392,10 @@ class AutoTrader:
             logger.info(f"[DRY] 매수 생략: {coin} {krw:,.0f}원")
             return
 
-        # 지정가 매수: 현재가 + 0.1% (빠른 체결 + 슬리피지 최소화)
-        limit_price = price * (1 + BUY_LIMIT_OFFSET_PCT / 100)
-        quantity = krw / limit_price
-        result = self.api.buy_limit(coin, limit_price, quantity)
+        # 시장가 매수
+        result = self.api.buy_market(coin, krw)
         if result:
-            logger.info(f"[지정가 매수] {coin} | 주문가={limit_price:,.2f}원 x {quantity:.6f}개")
+            quantity = krw / price
             if coin in self.positions:
                 pos = self.positions[coin]
                 pos.quantity += quantity
@@ -407,12 +405,12 @@ class AutoTrader:
             else:
                 self.positions[coin] = Position(
                     coin=coin,
-                    buy_price=limit_price,
+                    buy_price=price,
                     quantity=quantity,
                     total_amount=krw
                 )
-            trade_logger.log_trade(coin, "매수", limit_price, quantity, krw, reason="매수신호")
-            logger.info(f"[매수 완료] {coin} | 가격={limit_price:,.2f} 금액={krw:,.0f}원")
+            trade_logger.log_trade(coin, "매수", price, quantity, krw, reason="매수신호")
+            logger.info(f"[매수 완료] {coin} | 가격={price:,.0f} 금액={krw:,.0f}원")
 
     # ===== 상태 조회 =====
 
