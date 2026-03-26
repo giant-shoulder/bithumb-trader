@@ -17,7 +17,5 @@ jobs:
           script: |
             cd ~/bithumb-trader
             git pull
-            pkill -f main.py || true
-            sleep 1
-            nohup python3 main.py > /dev/null 2>&1 & disown
+            sudo systemctl restart bithumb-trader
             echo "배포 완료: $(date)"
