@@ -33,18 +33,27 @@ MAX_POSITION_KRW = 500000    # 코인당 최대 투자금액 (원)
 BUY_SPLIT = 5                # 불타기 분할 횟수
 BUY_UNIT_KRW = MAX_POSITION_KRW // BUY_SPLIT  # 1회 매수 금액
 
-# 손절
-STOP_LOSS_PCT = -2.0         # 손절 기준 (%)
+# ===== ATR 기반 3단계 손절/익절 =====
+ATR_PERIOD = 14               # ATR 계산 기간
 
-# 트레일링 스탑
-TRAILING_STOP_TRIGGER = 1.5  # 트레일링 스탑 활성화 기준 (%)
-TRAILING_STOP_PCT = 0.8      # 고점 대비 하락 허용폭 (%)
+# Phase 1: 방어 - 하드 손절 (ATR 기반, 클램프)
+HARD_STOP_ATR_MULT = 1.5      # 하드 손절 = ATR × 1.5
+HARD_STOP_MIN_PCT = 0.8       # 하드 손절 최소값 (%)
+HARD_STOP_MAX_PCT = 3.0       # 하드 손절 최대값 (%)
+
+# Phase 2: 본전 확보 (수익 >= 1×ATR)
+BREAKEVEN_TRIGGER_ATR = 1.0   # 본전 컷 활성화 기준 (ATR 배수)
+TRAILING_PHASE2_ATR = 0.7     # Phase 2 트레일링 폭 (ATR 배수)
+
+# Phase 3: 수익 극대화 (수익 >= 2×ATR)
+PROFIT_TRIGGER_ATR = 2.0      # Phase 3 활성화 기준 (ATR 배수)
+TRAILING_PHASE3_ATR = 0.5     # Phase 3 트레일링 폭 (ATR 배수, 더 타이트)
 
 # 최소 보유 시간
-MIN_HOLD_SECONDS = 180       # 매수 후 최소 보유 시간 (초)
+MIN_HOLD_SECONDS = 180        # 매수 후 최소 보유 시간 (초)
 
 # 매도 후 재매수 금지 시간
-BUY_COOLDOWN_SECONDS = 600   # 매도 후 동일 코인 재매수 금지 시간 (초)
+BUY_COOLDOWN_SECONDS = 600    # 매도 후 동일 코인 재매수 금지 시간 (초)
 
 # RSI
 RSI_PERIOD = 14
@@ -55,5 +64,9 @@ BB_PERIOD = 20
 BB_STD = 2.0
 
 # ===== 루프 설정 =====
-POLLING_INTERVAL = 10         # 전략 실행 주기 (초)
+POLLING_INTERVAL_IDLE = 30    # 포지션 없을 때 실행 주기 (초)
+POLLING_INTERVAL_ACTIVE = 10  # 포지션 있을 때 실행 주기 (초)
 LOG_FILE = "trades.log"       # 로그 파일명
+
+# ===== 리스크 관리 =====
+DAILY_LOSS_LIMIT_PCT = 5.0    # 일일 최대 손실 한도 (원금 대비 %)

@@ -10,8 +10,10 @@ from strategy import HongStrategy
 from logger import get_logger, TradeLogger
 from config import (
     MAX_POSITION_KRW, BUY_UNIT_KRW, BUY_SPLIT,
-    POLLING_INTERVAL, MOMENTUM_TOP_N, MIN_VOLUME_24H_KRW,
-    MIN_HOLD_SECONDS, BUY_COOLDOWN_SECONDS
+    POLLING_INTERVAL_IDLE, POLLING_INTERVAL_ACTIVE,
+    MOMENTUM_TOP_N, MIN_VOLUME_24H_KRW,
+    MIN_HOLD_SECONDS, BUY_COOLDOWN_SECONDS,
+    DAILY_LOSS_LIMIT_PCT,
 )
 
 logger = get_logger()
@@ -52,6 +54,8 @@ class AutoTrader:
         self.sell_cooldown: dict[str, float] = {}
         self.is_running = False
         self.dry_run = dry_run
+        self.daily_pnl_krw = 0.0
+        self.daily_reset_date = datetime.now().date()
         logger.info("=" * 50)
         logger.info("빗섬 자동매매 시스템 시작 (홍인기 전략)")
         logger.info("=" * 50)
@@ -90,11 +94,18 @@ class AutoTrader:
                 logger.info(f"\n{'='*40}")
                 logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] 전략 실행 중...")
 
+                # 일일 손실 한도 체크
+                if not self._check_daily_loss_limit():
+                    interval = POLLING_INTERVAL_IDLE
+                    logger.info(f"다음 실행: {interval}초 후")
+                    time.sleep(interval)
+                    continue
+
                 # 1. 거래대금 상위 코인 조회
                 top_coins = self._get_top_coins()
                 if not top_coins:
                     logger.warning("거래대금 데이터 조회 실패")
-                    time.sleep(POLLING_INTERVAL)
+                    time.sleep(POLLING_INTERVAL_IDLE)
                     continue
 
                 self._log_market_overview(top_coins)
@@ -105,9 +116,10 @@ class AutoTrader:
                 # 3. 신규 매수 탐색
                 self._scan_for_entry(top_coins)
 
-                # 4. 대기
-                logger.info(f"다음 실행: {POLLING_INTERVAL}초 후")
-                time.sleep(POLLING_INTERVAL)
+                # 4. 포지션 유무에 따라 대기 시간 결정
+                interval = POLLING_INTERVAL_ACTIVE if self.positions else POLLING_INTERVAL_IDLE
+                logger.info(f"다음 실행: {interval}초 후 ({'포지션 있음' if self.positions else '대기 중'})")
+                time.sleep(interval)
 
             except KeyboardInterrupt:
                 logger.info("\n사용자 중단 요청")
@@ -130,6 +142,23 @@ class AutoTrader:
                 if price:
                     pnl = (price - pos.buy_price) / pos.buy_price * 100
                     logger.warning(f"  {coin}: 매입가={pos.buy_price:,.0f} 현재={price:,.0f} ({pnl:+.1f}%)")
+
+    # ===== 일일 손실 한도 =====
+
+    def _check_daily_loss_limit(self) -> bool:
+        """일일 손실 한도 체크. 한도 초과 시 False 반환"""
+        today = datetime.now().date()
+        if today != self.daily_reset_date:
+            self.daily_pnl_krw = 0.0
+            self.daily_reset_date = today
+            logger.info("일일 손익 초기화")
+
+        if self.daily_pnl_krw < 0:
+            loss_pct = abs(self.daily_pnl_krw) / MAX_POSITION_KRW * 100
+            if loss_pct >= DAILY_LOSS_LIMIT_PCT:
+                logger.warning(f"일일 손실 한도 도달: {self.daily_pnl_krw:,.0f}원 ({loss_pct:.1f}%) → 매수 중단")
+                return False
+        return True
 
     # ===== 거래대금 상위 코인 =====
 
@@ -212,9 +241,11 @@ class AutoTrader:
                 coin, "매도", price, actual_qty,
                 actual_qty * price, pnl_pct, reason
             )
+            pnl_krw = (price - pos.buy_price) / pos.buy_price * pos.total_amount
+            self.daily_pnl_krw += pnl_krw
             del self.positions[coin]
             self.sell_cooldown[coin] = time.time() + BUY_COOLDOWN_SECONDS
-            logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}% | 재매수 금지: {BUY_COOLDOWN_SECONDS}초")
+            logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}% ({pnl_krw:+,.0f}원) | 오늘 누적: {self.daily_pnl_krw:+,.0f}원")
 
     # ===== 신규 매수 탐색 =====
 

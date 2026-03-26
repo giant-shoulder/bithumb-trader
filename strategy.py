@@ -9,8 +9,10 @@ from config import (
     RSI_BUY_MIN, RSI_BUY_MAX,
     BULLISH_CANDLE_MIN, PREV_HIGH_PERIOD,
     MOMENTUM_TOP_N,
-    STOP_LOSS_PCT,
-    TRAILING_STOP_TRIGGER, TRAILING_STOP_PCT,
+    ATR_PERIOD,
+    HARD_STOP_ATR_MULT, HARD_STOP_MIN_PCT, HARD_STOP_MAX_PCT,
+    BREAKEVEN_TRIGGER_ATR, TRAILING_PHASE2_ATR,
+    PROFIT_TRIGGER_ATR, TRAILING_PHASE3_ATR,
     RSI_PERIOD, RSI_OVERBOUGHT,
     BB_PERIOD, BB_STD,
 )
@@ -136,6 +138,24 @@ class HongStrategy:
         std = df['close'].rolling(window=BB_PERIOD).std()
         return (ma + BB_STD * std).iloc[-1], ma.iloc[-1], (ma - BB_STD * std).iloc[-1]
 
+    def calc_atr(self, df: pd.DataFrame) -> float:
+        """ATR (Average True Range) 계산 - 코인별 변동성 지표"""
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        tr = pd.concat([
+            high - low,
+            (high - close.shift(1)).abs(),
+            (low - close.shift(1)).abs(),
+        ], axis=1).max(axis=1)
+        return tr.rolling(window=ATR_PERIOD).mean().iloc[-1]
+
+    def calc_atr_pct(self, df: pd.DataFrame) -> float:
+        """ATR을 현재가 대비 퍼센트로 변환"""
+        atr = self.calc_atr(df)
+        current_price = df['close'].iloc[-1]
+        return (atr / current_price) * 100 if current_price > 0 else 1.0
+
     def calc_macd(self, df: pd.DataFrame) -> tuple:
         """MACD 계산 (macd_cur, signal_cur, macd_prev, signal_prev)"""
         exp12 = df['close'].ewm(span=12, adjust=False).mean()
@@ -247,7 +267,12 @@ class HongStrategy:
     def check_sell_signal(self, coin: str, df: pd.DataFrame,
                           buy_price: float, current_price: float,
                           volume_rank: int, highest_price: float = None) -> dict:
-        """매도 신호 종합 판단"""
+        """ATR 기반 3단계 매도 신호
+
+        Phase 1 (매수 직후): 하드 손절만 (ATR × 1.5, 최소 0.8% ~ 최대 3%)
+        Phase 2 (수익 >= 1×ATR): 본전 컷 + 트레일링 (ATR × 0.7)
+        Phase 3 (수익 >= 2×ATR): 타이트한 트레일링 (ATR × 0.5) + RSI/BB 매도
+        """
         result = {
             'coin': coin,
             'sell': False,
@@ -259,34 +284,52 @@ class HongStrategy:
             highest_price = current_price
 
         pct = (current_price - buy_price) / buy_price * 100
+        atr_pct = self.calc_atr_pct(df)
 
-        # 1. 손절 (-1%)
-        if self.should_stop_loss(buy_price, current_price):
+        # 하드 손절 한계 계산 (ATR 기반, 클램프)
+        hard_stop = min(max(atr_pct * HARD_STOP_ATR_MULT, HARD_STOP_MIN_PCT), HARD_STOP_MAX_PCT)
+
+        # Phase 판단 (ATR 배수 기준)
+        gain_in_atr = pct / atr_pct if atr_pct > 0 else 0
+
+        # === 하드 손절 (모든 Phase 공통) ===
+        if pct <= -hard_stop:
             result['sell'] = True
             result['emergency'] = True
-            result['reason'] = f"손절: {pct:.1f}%"
+            result['reason'] = f"하드 손절: {pct:.2f}% (ATR 기반 한계: -{hard_stop:.2f}%)"
             return result
 
-        # 2. 트레일링 스탑
-        if self.should_trailing_stop(current_price, highest_price, buy_price):
-            drop = (highest_price - current_price) / highest_price * 100
-            result['sell'] = True
-            result['reason'] = f"트레일링 스탑: 고점 대비 -{drop:.1f}% (수익 {pct:+.1f}%)"
-            return result
+        # === Phase 3: 수익 >= 2×ATR ===
+        if gain_in_atr >= PROFIT_TRIGGER_ATR:
+            trailing_pct = atr_pct * TRAILING_PHASE3_ATR
+            drop_from_high = (highest_price - current_price) / highest_price * 100
+            if drop_from_high >= trailing_pct:
+                result['sell'] = True
+                result['reason'] = f"Phase3 트레일링: 고점 대비 -{drop_from_high:.2f}% (수익 {pct:+.2f}%)"
+                return result
+            if self.should_sell_rsi(df):
+                result['sell'] = True
+                result['reason'] = f"RSI 과매수 반전 (수익 {pct:+.2f}%, Phase3)"
+                return result
+            if self.should_sell_bb(df, current_price):
+                result['sell'] = True
+                result['reason'] = f"BB 상단 도달 (수익 {pct:+.2f}%, Phase3)"
+                return result
 
-        # 3. RSI 과매수 반전
-        if self.should_sell_rsi(df):
-            result['sell'] = True
-            result['reason'] = f"RSI 과매수 반전 (수익 {pct:+.1f}%)"
-            return result
+        # === Phase 2: 수익 >= 1×ATR ===
+        elif gain_in_atr >= BREAKEVEN_TRIGGER_ATR:
+            if pct <= 0:
+                result['sell'] = True
+                result['reason'] = f"본전 컷: {pct:.2f}% (Phase2 진입 후 반락)"
+                return result
+            trailing_pct = atr_pct * TRAILING_PHASE2_ATR
+            drop_from_high = (highest_price - current_price) / highest_price * 100
+            if drop_from_high >= trailing_pct:
+                result['sell'] = True
+                result['reason'] = f"Phase2 트레일링: 고점 대비 -{drop_from_high:.2f}% (수익 {pct:+.2f}%)"
+                return result
 
-        # 4. 볼린저 밴드 상단 터치
-        if self.should_sell_bb(df, current_price):
-            result['sell'] = True
-            result['reason'] = f"볼린저 밴드 상단 도달 (수익 {pct:+.1f}%)"
-            return result
-
-        # 5. 모멘텀 소멸 (스캔 상위권 이탈)
+        # === 모멘텀 소멸 (모든 Phase 공통) ===
         if volume_rank > MOMENTUM_TOP_N * 2:
             result['sell'] = True
             result['reason'] = f"모멘텀 소멸: 스캔 {volume_rank}위 밖"
