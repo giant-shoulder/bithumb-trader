@@ -212,8 +212,20 @@ class AutoTrader:
                 coin, df, pos.buy_price, current_price, rank, pos.highest_price
             )
 
+            # 현재 Phase 표시
+            atr_pct = self.strategy.calc_atr_pct(df)
+            gain_in_atr = pnl_pct / atr_pct if atr_pct > 0 else 0
+            drop_from_high = (pos.highest_price - current_price) / pos.highest_price * 100
+            if gain_in_atr >= 2.0:
+                phase_str = f"Phase3 🎯 | 고점대비 -{drop_from_high:.2f}%"
+            elif gain_in_atr >= 1.0:
+                phase_str = f"Phase2 📈 | 고점대비 -{drop_from_high:.2f}%"
+            else:
+                phase_str = f"Phase1 🛡️ | ATR={atr_pct:.2f}%"
+
+            status_str = '⚠️ 매도신호' if signal['sell'] else f'보유중 [{phase_str}]'
             logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
-                        f"손익={pnl_pct:+.1f}% | {'⚠️ 매도신호' if signal['sell'] else '보유중'}")
+                        f"손익={pnl_pct:+.1f}% | {status_str}")
 
             if signal['sell']:
                 coins_to_sell.append((coin, pos, current_price, signal))
