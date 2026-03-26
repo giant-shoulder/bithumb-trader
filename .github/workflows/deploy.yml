@@ -18,4 +18,5 @@ jobs:
             cd ~/bithumb-trader
             git pull
             sudo systemctl restart bithumb-trader
+            sudo systemctl restart bithumb-dashboard
             echo "배포 완료: $(date)"
