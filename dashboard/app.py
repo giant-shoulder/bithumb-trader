@@ -100,9 +100,10 @@ def review_data(target_date):
     trade_file = f"{base_dir}/trade_history_{ym}.csv"
     if os.path.exists(trade_file):
         with open(trade_file, encoding='utf-8') as f:
-            reader = csv.DictReader(f)
+            reader = csv.DictReader(f, restkey=None)
             for row in reader:
                 if row['시간'].startswith(target_date):
+                    row.pop(None, None)
                     trades.append(row)
 
     # 탈락 기록 읽기
@@ -110,9 +111,10 @@ def review_data(target_date):
     reject_file = f"{base_dir}/reject_history_{ym}.csv"
     if os.path.exists(reject_file):
         with open(reject_file, encoding='utf-8') as f:
-            reader = csv.DictReader(f)
+            reader = csv.DictReader(f, restkey=None)
             for row in reader:
                 if row['시간'].startswith(target_date):
+                    row.pop(None, None)
                     rejects.append(row)
 
     # 통계 계산
