@@ -41,13 +41,13 @@ HARD_STOP_ATR_MULT = 1.5      # 하드 손절 = ATR × 1.5
 HARD_STOP_MIN_PCT = 0.8       # 하드 손절 최소값 (%)
 HARD_STOP_MAX_PCT = 3.0       # 하드 손절 최대값 (%)
 
-# Phase 2: 본전 확보 (수익 >= 1×ATR)
-BREAKEVEN_TRIGGER_ATR = 1.0   # 본전 컷 활성화 기준 (ATR 배수)
-TRAILING_PHASE2_ATR = 0.7     # Phase 2 트레일링 폭 (ATR 배수)
+# Phase 2: 본전 확보 (수익 >= 0.5×ATR)
+BREAKEVEN_TRIGGER_ATR = 0.5   # 본전 컷 활성화 기준 (ATR 배수)
+TRAILING_PHASE2_ATR = 1.0     # Phase 2 트레일링 폭 (ATR 배수)
 
-# Phase 3: 수익 극대화 (수익 >= 2×ATR)
-PROFIT_TRIGGER_ATR = 2.0      # Phase 3 활성화 기준 (ATR 배수)
-TRAILING_PHASE3_ATR = 0.5     # Phase 3 트레일링 폭 (ATR 배수, 더 타이트)
+# Phase 3: 수익 극대화 (수익 >= 1.5×ATR)
+PROFIT_TRIGGER_ATR = 1.5      # Phase 3 활성화 기준 (ATR 배수)
+TRAILING_PHASE3_ATR = 0.7     # Phase 3 트레일링 폭 (ATR 배수)
 
 # 최소 보유 시간
 MIN_HOLD_SECONDS = 180        # 매수 후 최소 보유 시간 (초)
