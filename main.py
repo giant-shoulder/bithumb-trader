@@ -10,6 +10,7 @@ Claude 단타 전략
 import sys
 import argparse
 from trader import AutoTrader
+from telegram_monitor import TelegramMonitor
 from logger import get_logger
 
 logger = get_logger()
@@ -29,6 +30,10 @@ def main():
     if args.status:
         print(trader.get_status())
         return
+
+    # 텔레그램 모니터 시작 (API 키 없으면 스킵)
+    tg_monitor = TelegramMonitor(trader.telegram_queue)
+    tg_monitor.start()
 
     logger.info("자동매매 시작. 중단하려면 Ctrl+C")
     from config import MAX_POSITION_KRW, BUY_SPLIT

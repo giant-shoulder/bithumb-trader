@@ -3,6 +3,7 @@
 Claude 전략 기반 빗섬 자동매매
 """
 import time
+import queue
 from dataclasses import dataclass, field
 from datetime import datetime
 from bithumb_api import BithumbAPI
@@ -57,6 +58,7 @@ class AutoTrader:
         self.dry_run = dry_run
         self.daily_pnl_krw = 0.0
         self.daily_reset_date = datetime.now().date()
+        self.telegram_queue: queue.Queue = queue.Queue()
         logger.info("=" * 50)
         logger.info("빗섬 자동매매 시스템 시작 (Claude 전략)")
         logger.info("=" * 50)
@@ -114,7 +116,10 @@ class AutoTrader:
                 # 2. 보유 포지션 관리 (매도 우선)
                 self._manage_positions(top_coins)
 
-                # 3. 신규 매수 탐색
+                # 3. 텔레그램 신호 처리 (우선순위 매수)
+                self._process_telegram_signals()
+
+                # 4. 신규 매수 탐색
                 self._scan_for_entry(top_coins)
 
                 # 4. 포지션 유무에 따라 대기 시간 결정
@@ -259,6 +264,52 @@ class AutoTrader:
             del self.positions[coin]
             self.sell_cooldown[coin] = time.time() + BUY_COOLDOWN_SECONDS
             logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}% ({pnl_krw:+,.0f}원) | 오늘 누적: {self.daily_pnl_krw:+,.0f}원")
+
+    # ===== 텔레그램 신호 처리 =====
+
+    def _process_telegram_signals(self):
+        """텔레그램 신호 큐 처리 - 기술적 분석 통과 시 매수"""
+        while not self.telegram_queue.empty():
+            try:
+                signal = self.telegram_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            coin = signal['coin']
+            alert_type = signal['type']
+            logger.info(f"[텔레그램 신호 처리] {coin} | {alert_type}")
+
+            # 쿨다운/포지션 체크
+            if coin in self.positions:
+                logger.info(f"[텔레그램] {coin} 이미 보유 중, 스킵")
+                continue
+            if time.time() <= self.sell_cooldown.get(coin, 0):
+                logger.info(f"[텔레그램] {coin} 쿨다운 중, 스킵")
+                continue
+
+            # 현재가 및 기술적 분석
+            price = self.api.get_current_price(coin)
+            if not price:
+                continue
+            df = self.api.get_ohlcv(coin, interval="1h", count=200)
+            if df is None:
+                continue
+
+            buy_signal = self.strategy.check_buy_signal(coin, df, score=0)
+            if not buy_signal['buy']:
+                logger.info(f"[텔레그램] {coin} 기술적 분석 미통과: {', '.join(buy_signal['fail_reasons'])}")
+                continue
+
+            # 오더북 체크
+            orderbook = self.api.get_orderbook(coin)
+            trades = self.api.get_recent_trades(coin, count=100)
+            pressure = self.strategy.check_buy_pressure(orderbook, trades)
+            if not pressure['strong']:
+                logger.info(f"[텔레그램] {coin} 오더북 미통과: {pressure['reason']}")
+                continue
+
+            logger.info(f"[텔레그램 매수] {coin} | 모든 조건 통과 → 매수 실행")
+            self._execute_buy(coin, price)
 
     # ===== 신규 매수 탐색 =====
 
