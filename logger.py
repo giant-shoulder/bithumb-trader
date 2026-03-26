@@ -20,6 +20,7 @@ def get_logger(name: str = "bithumb_trader") -> logging.Logger:
         "[%(asctime)s] %(levelname)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
+    formatter.converter = lambda *args: datetime.now(KST).timetuple()
 
     # 콘솔 출력
     console = logging.StreamHandler()
