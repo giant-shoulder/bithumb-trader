@@ -306,7 +306,7 @@ class AutoTrader:
                 continue
 
             logger.info(f"[텔레그램 매수] {coin} | {pressure['reason']} → 매수 실행")
-            self._execute_buy(coin, price)
+            self._execute_buy(coin, price, source="telegram")
 
     # ===== 신규 매수 탐색 =====
 
@@ -356,15 +356,16 @@ class AutoTrader:
                 break
             else:
                 logger.info(f"[오더북 탈락] {coin} | {pressure['reason']}")
+                trade_logger.log_reject(coin, pressure['reason'], coin_data['price'])
 
         if final_coin_data is None:
             logger.info("[매수 보류] 매수세 강한 후보 없음")
             return
 
         logger.info(f"[최종 선택] {final_coin_data['coin']} | RSI={final_signal['rsi']:.1f}")
-        self._execute_buy(final_coin_data['coin'], final_coin_data['price'])
+        self._execute_buy(final_coin_data['coin'], final_coin_data['price'], source="momentum")
 
-    def _execute_buy(self, coin: str, price: float):
+    def _execute_buy(self, coin: str, price: float, source: str = "momentum"):
         """매수 실행"""
         # 이미 보유 중이면 불타기
         if coin in self.positions:
@@ -409,8 +410,8 @@ class AutoTrader:
                     quantity=quantity,
                     total_amount=krw
                 )
-            trade_logger.log_trade(coin, "매수", price, quantity, krw, reason="매수신호")
-            logger.info(f"[매수 완료] {coin} | 가격={price:,.0f} 금액={krw:,.0f}원")
+            trade_logger.log_trade(coin, "매수", price, quantity, krw, reason="매수신호", source=source)
+            logger.info(f"[매수 완료] {coin} | 가격={price:,.0f} 금액={krw:,.0f}원 [{source}]")
 
     # ===== 상태 조회 =====
 

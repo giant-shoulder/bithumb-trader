@@ -37,19 +37,30 @@ def get_logger(name: str = "bithumb_trader") -> logging.Logger:
 class TradeLogger:
     """거래 기록 전용 로거"""
     def __init__(self):
-        self.log_file = f"trade_history_{datetime.now().strftime('%Y%m')}.csv"
-        if not os.path.exists(self.log_file):
-            with open(self.log_file, 'w', encoding='utf-8') as f:
-                f.write("시간,코인,유형,가격,수량,금액,손익률,사유\n")
+        self.trade_file = f"trade_history_{datetime.now().strftime('%Y%m')}.csv"
+        self.reject_file = f"reject_history_{datetime.now().strftime('%Y%m')}.csv"
+
+        if not os.path.exists(self.trade_file):
+            with open(self.trade_file, 'w', encoding='utf-8') as f:
+                f.write("시간,코인,유형,가격,수량,금액,손익률,사유,신호출처\n")
+
+        if not os.path.exists(self.reject_file):
+            with open(self.reject_file, 'w', encoding='utf-8') as f:
+                f.write("시간,코인,탈락사유,탈락시가격\n")
 
     def log_trade(self, coin: str, trade_type: str, price: float,
                   quantity: float, amount: float, pnl_pct: float = 0.0,
-                  reason: str = ""):
+                  reason: str = "", source: str = "momentum"):
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(self.log_file, 'a', encoding='utf-8') as f:
+        with open(self.trade_file, 'a', encoding='utf-8') as f:
             f.write(f"{now},{coin},{trade_type},{price:.2f},{quantity:.6f},"
-                    f"{amount:.0f},{pnl_pct:.2f},{reason}\n")
+                    f"{amount:.0f},{pnl_pct:.2f},{reason},{source}\n")
         get_logger().info(
             f"[거래기록] {trade_type} {coin} | 가격={price:,.0f} 수량={quantity:.6f} "
-            f"금액={amount:,.0f}원 손익={pnl_pct:.2f}% | {reason}"
+            f"금액={amount:,.0f}원 손익={pnl_pct:.2f}% | {reason} [{source}]"
         )
+
+    def log_reject(self, coin: str, reason: str, price: float):
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(self.reject_file, 'a', encoding='utf-8') as f:
+            f.write(f"{now},{coin},{reason},{price:.2f}\n")

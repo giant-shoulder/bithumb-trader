@@ -3,6 +3,9 @@
 """
 import subprocess
 import os
+import csv
+import glob
+from datetime import datetime, date
 from functools import wraps
 from flask import Flask, render_template, Response, request, session, redirect, url_for, jsonify
 
@@ -75,6 +78,82 @@ def logs():
             yield f"data: {line.rstrip()}\n\n"
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@app.route('/review')
+@app.route('/review/<target_date>')
+@login_required
+def review(target_date=None):
+    if target_date is None:
+        target_date = date.today().strftime('%Y-%m-%d')
+    return render_template('review.html', target_date=target_date)
+
+
+@app.route('/api/review/<target_date>')
+@login_required
+def review_data(target_date):
+    base_dir = '/home/ubuntu/bithumb-trader'
+    ym = target_date[:7].replace('-', '')
+
+    # 매매 기록 읽기
+    trades = []
+    trade_file = f"{base_dir}/trade_history_{ym}.csv"
+    if os.path.exists(trade_file):
+        with open(trade_file, encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row['시간'].startswith(target_date):
+                    trades.append(row)
+
+    # 탈락 기록 읽기
+    rejects = []
+    reject_file = f"{base_dir}/reject_history_{ym}.csv"
+    if os.path.exists(reject_file):
+        with open(reject_file, encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row['시간'].startswith(target_date):
+                    rejects.append(row)
+
+    # 통계 계산
+    buys = [t for t in trades if t['유형'] == '매수']
+    sells = [t for t in trades if t['유형'] == '매도']
+    wins = [t for t in sells if float(t['손익률']) > 0]
+    losses = [t for t in sells if float(t['손익률']) <= 0]
+    total_pnl = sum(float(t['손익률']) for t in sells)
+    pnl_krw = sum(
+        float(t['금액']) * float(t['손익률']) / 100
+        for t in sells
+    )
+
+    # 신호 출처별 통계
+    sources = {}
+    for t in sells:
+        src = t.get('신호출처', 'momentum')
+        if src not in sources:
+            sources[src] = {'count': 0, 'wins': 0, 'pnl': 0.0}
+        sources[src]['count'] += 1
+        sources[src]['pnl'] += float(t['손익률'])
+        if float(t['손익률']) > 0:
+            sources[src]['wins'] += 1
+
+    return jsonify({
+        'date': target_date,
+        'trades': trades,
+        'rejects': rejects,
+        'stats': {
+            'buy_count': len(buys),
+            'sell_count': len(sells),
+            'win_count': len(wins),
+            'loss_count': len(losses),
+            'win_rate': len(wins) / len(sells) * 100 if sells else 0,
+            'total_pnl_pct': total_pnl,
+            'total_pnl_krw': pnl_krw,
+            'avg_win': sum(float(t['손익률']) for t in wins) / len(wins) if wins else 0,
+            'avg_loss': sum(float(t['손익률']) for t in losses) / len(losses) if losses else 0,
+        },
+        'sources': sources,
+    })
 
 
 if __name__ == '__main__':

@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>매매 회고</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: 'Segoe UI', sans-serif;
+      min-height: 100vh;
+    }
+    header {
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    header h1 { font-size: 18px; }
+    .header-right { display: flex; align-items: center; gap: 12px; }
+    .btn {
+      padding: 6px 14px;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      background: transparent;
+      color: #e6edf3;
+    }
+    .btn:hover { border-color: #8b949e; }
+    .btn-primary { background: #238636; border-color: #238636; }
+    .btn-primary:hover { background: #2ea043; }
+    input[type="date"] {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #e6edf3;
+      padding: 5px 10px;
+      font-size: 13px;
+    }
+    .content { padding: 24px; max-width: 1200px; margin: 0 auto; }
+
+    /* 통계 카드 */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 16px;
+      text-align: center;
+    }
+    .stat-label { font-size: 12px; color: #8b949e; margin-bottom: 6px; }
+    .stat-value { font-size: 22px; font-weight: 700; }
+    .green { color: #3fb950; }
+    .red { color: #f85149; }
+    .blue { color: #79c0ff; }
+    .yellow { color: #d29922; }
+
+    /* 신호출처별 성과 */
+    .section { margin-bottom: 28px; }
+    .section-title {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #21262d;
+    }
+    .source-cards {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .source-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 14px 20px;
+      min-width: 180px;
+    }
+    .source-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: #79c0ff;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+    }
+    .source-stat { font-size: 13px; color: #8b949e; margin-bottom: 4px; }
+    .source-stat span { color: #e6edf3; }
+
+    /* 테이블 */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th {
+      background: #161b22;
+      padding: 10px 12px;
+      text-align: left;
+      color: #8b949e;
+      font-weight: 500;
+      border-bottom: 1px solid #21262d;
+    }
+    td {
+      padding: 9px 12px;
+      border-bottom: 1px solid #21262d;
+    }
+    tr:hover td { background: #161b22; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge-buy { background: #1a4731; color: #3fb950; }
+    .badge-sell { background: #3d1a1a; color: #f85149; }
+    .badge-momentum { background: #1c2a3a; color: #79c0ff; }
+    .badge-telegram { background: #2a1c3a; color: #bc8cff; }
+    .pnl-pos { color: #3fb950; font-weight: 600; }
+    .pnl-neg { color: #f85149; font-weight: 600; }
+    .empty-msg {
+      text-align: center;
+      padding: 40px;
+      color: #8b949e;
+      font-size: 14px;
+    }
+    .loading { text-align: center; padding: 60px; color: #8b949e; }
+    .nav-link {
+      color: #79c0ff;
+      text-decoration: none;
+      font-size: 13px;
+    }
+    .nav-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>📊 매매 회고</h1>
+    <div class="header-right">
+      <a href="/" class="nav-link">← 대시보드</a>
+      <input type="date" id="datePicker" value="{{ target_date }}">
+      <button class="btn btn-primary" onclick="loadData()">조회</button>
+      <a href="/logout"><button class="btn">로그아웃</button></a>
+    </div>
+  </header>
+
+  <div class="content">
+    <div id="main" class="loading">데이터 불러오는 중...</div>
+  </div>
+
+  <script>
+    const initialDate = "{{ target_date }}";
+
+    function fmt(n, dec=0) {
+      return Number(n).toLocaleString('ko-KR', {minimumFractionDigits: dec, maximumFractionDigits: dec});
+    }
+    function pnlClass(v) { return Number(v) > 0 ? 'pnl-pos' : 'pnl-neg'; }
+    function pnlSign(v) { return Number(v) > 0 ? '+' : ''; }
+
+    function renderSourceCards(sources) {
+      if (!sources || Object.keys(sources).length === 0) return '<p style="color:#8b949e;font-size:13px;">신호 데이터 없음</p>';
+      return Object.entries(sources).map(([name, s]) => {
+        const winRate = s.count > 0 ? (s.wins / s.count * 100).toFixed(1) : '0.0';
+        const avgPnl = s.count > 0 ? (s.pnl / s.count).toFixed(2) : '0.00';
+        return `
+        <div class="source-card">
+          <div class="source-name">${name}</div>
+          <div class="source-stat">매도 횟수: <span>${s.count}회</span></div>
+          <div class="source-stat">승률: <span class="${Number(winRate) >= 50 ? 'green' : 'red'}">${winRate}%</span></div>
+          <div class="source-stat">평균 손익: <span class="${Number(avgPnl) > 0 ? 'green' : 'red'}">${pnlSign(avgPnl)}${avgPnl}%</span></div>
+          <div class="source-stat">총 손익: <span class="${Number(s.pnl) > 0 ? 'green' : 'red'}">${pnlSign(s.pnl)}${Number(s.pnl).toFixed(2)}%</span></div>
+        </div>`;
+      }).join('');
+    }
+
+    function renderTradesTable(trades) {
+      if (!trades || trades.length === 0) return '<div class="empty-msg">매매 기록 없음</div>';
+      const rows = trades.map(t => {
+        const isBuy = t['유형'] === '매수';
+        const pnl = parseFloat(t['손익률'] || 0);
+        const srcBadge = t['신호출처'] === 'telegram'
+          ? '<span class="badge badge-telegram">텔레그램</span>'
+          : '<span class="badge badge-momentum">모멘텀</span>';
+        return `<tr>
+          <td>${t['시간'].substring(11)}</td>
+          <td><strong>${t['코인']}</strong></td>
+          <td><span class="badge ${isBuy ? 'badge-buy' : 'badge-sell'}">${t['유형']}</span></td>
+          <td>${fmt(t['가격'])}원</td>
+          <td>${t['수량']}</td>
+          <td>${fmt(t['금액'])}원</td>
+          <td class="${isBuy ? '' : pnlClass(pnl)}">${isBuy ? '-' : pnlSign(pnl) + pnl.toFixed(2) + '%'}</td>
+          <td>${srcBadge}</td>
+          <td style="color:#8b949e">${t['사유'] || ''}</td>
+        </tr>`;
+      }).join('');
+      return `<table>
+        <thead><tr>
+          <th>시각</th><th>코인</th><th>유형</th><th>가격</th><th>수량</th><th>금액</th><th>손익</th><th>신호</th><th>사유</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
+    function renderRejectsTable(rejects) {
+      if (!rejects || rejects.length === 0) return '<div class="empty-msg">탈락 기록 없음</div>';
+      const rows = rejects.map(r => `<tr>
+        <td>${r['시간'].substring(11)}</td>
+        <td><strong>${r['코인']}</strong></td>
+        <td style="color:#d29922">${r['탈락사유']}</td>
+        <td>${fmt(r['탈락시가격'])}원</td>
+      </tr>`).join('');
+      return `<table>
+        <thead><tr>
+          <th>시각</th><th>코인</th><th>탈락 사유</th><th>당시 가격</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
+    function render(data) {
+      const s = data.stats;
+      const winRateColor = s.win_rate >= 50 ? 'green' : 'red';
+      const pnlColor = s.total_pnl_pct >= 0 ? 'green' : 'red';
+      const pnlKrwColor = s.total_pnl_krw >= 0 ? 'green' : 'red';
+
+      document.getElementById('main').innerHTML = `
+        <!-- 날짜 -->
+        <div style="margin-bottom:20px;display:flex;align-items:center;gap:16px">
+          <h2 style="font-size:20px">${data.date} 매매 결과</h2>
+          <a href="/review/${prevDay(data.date)}" class="nav-link">← 전날</a>
+          <a href="/review/${nextDay(data.date)}" class="nav-link">다음날 →</a>
+        </div>
+
+        <!-- 통계 카드 -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">매수 횟수</div>
+            <div class="stat-value blue">${s.buy_count}회</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">매도 횟수</div>
+            <div class="stat-value blue">${s.sell_count}회</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">승률</div>
+            <div class="stat-value ${winRateColor}">${s.win_rate.toFixed(1)}%</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">승 / 패</div>
+            <div class="stat-value"><span class="green">${s.win_count}</span> / <span class="red">${s.loss_count}</span></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">총 손익률 합계</div>
+            <div class="stat-value ${pnlColor}">${pnlSign(s.total_pnl_pct)}${s.total_pnl_pct.toFixed(2)}%</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">총 손익 (원)</div>
+            <div class="stat-value ${pnlKrwColor}" style="font-size:18px">${pnlSign(s.total_pnl_krw)}${fmt(s.total_pnl_krw)}원</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">평균 수익 (승)</div>
+            <div class="stat-value green">${s.avg_win > 0 ? '+' : ''}${s.avg_win.toFixed(2)}%</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">평균 손실 (패)</div>
+            <div class="stat-value red">${s.avg_loss.toFixed(2)}%</div>
+          </div>
+        </div>
+
+        <!-- 신호출처별 성과 -->
+        <div class="section">
+          <div class="section-title">신호 출처별 성과</div>
+          <div class="source-cards">${renderSourceCards(data.sources)}</div>
+        </div>
+
+        <!-- 매매 내역 -->
+        <div class="section">
+          <div class="section-title">매매 내역 (${data.trades.length}건)</div>
+          ${renderTradesTable(data.trades)}
+        </div>
+
+        <!-- 탈락 종목 -->
+        <div class="section">
+          <div class="section-title">오더북 탈락 종목 (${data.rejects.length}건)</div>
+          ${renderRejectsTable(data.rejects)}
+        </div>
+      `;
+    }
+
+    function pnlSign(v) { return Number(v) > 0 ? '+' : ''; }
+
+    function prevDay(d) {
+      const dt = new Date(d);
+      dt.setDate(dt.getDate() - 1);
+      return dt.toISOString().split('T')[0];
+    }
+    function nextDay(d) {
+      const dt = new Date(d);
+      dt.setDate(dt.getDate() + 1);
+      return dt.toISOString().split('T')[0];
+    }
+
+    function loadData() {
+      const d = document.getElementById('datePicker').value;
+      if (!d) return;
+      document.getElementById('main').innerHTML = '<div class="loading">데이터 불러오는 중...</div>';
+      fetch(`/api/review/${d}`)
+        .then(r => r.json())
+        .then(render)
+        .catch(() => {
+          document.getElementById('main').innerHTML = '<div class="empty-msg">데이터를 불러오지 못했습니다.</div>';
+        });
+    }
+
+    loadData();
+  </script>
+</body>
+</html>
