@@ -303,7 +303,7 @@ class AutoTrader:
                 price = self.api.get_current_price(coin) or pos.buy_price
                 pnl = (price - pos.buy_price) / pos.buy_price * 100
                 lines.append(
-                    f"  {coin}: 매입={pos.buy_price:,.0f} 현재={price:,.0f} "
+                    f"  {coin}: 매수={pos.buy_price:,.0f} 현재={price:,.0f} "
                     f"손익={pnl:+.1f}% | {pos.buy_count}/{BUY_SPLIT}회"
                 )
         lines.append(f"{'='*40}")
