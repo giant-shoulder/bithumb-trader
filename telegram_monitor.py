@@ -14,18 +14,18 @@ from logger import get_logger
 logger = get_logger()
 
 # 빗썸 공식 실시간 알림 채널
-BITHUMB_CHANNEL = 'bithumb_global'
+BITHUMB_CHANNEL = 'BithumbExchangeData'
 
 # 캐치할 알림 패턴 및 우선순위
 ALERT_PATTERNS = [
-    # [속보] 코인이름(TICKER) 상승 감지
-    (re.compile(r'\[속보\].+?\(([A-Z]+)\).*(상승 감지|급등)'), 'surge', 2),
-    # [속보] 코인이름(TICKER) 매수세 급증
+    # [속보] 코인이름(TICKER) 매수세 급증 (가장 강한 신호)
     (re.compile(r'\[속보\].+?\(([A-Z]+)\).*(매수세 급증|체결강도)'), 'buy_pressure', 3),
+    # [속보] 코인이름(TICKER) 상승 감지 (1분간 급등)
+    (re.compile(r'\[속보\].+?\(([A-Z]+)\)\s*상승 감지'), 'surge', 2),
 ]
 
 # 무시할 알림 (관련성 낮음)
-IGNORE_KEYWORDS = ['김치 프리미엄', '김프', '공지', '점검', '상장', '이벤트']
+IGNORE_KEYWORDS = ['김치 프리미엄', '김프', '공지', '점검', '상장', '이벤트', '하락 감지', '하락 돌파']
 
 
 def parse_alert(text: str) -> dict | None:
