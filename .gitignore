@@ -1,6 +1,7 @@
 .env
 venv/
 .claude/
+oracle-cloud/
 __pycache__/
 *.pyc
 trades.log
