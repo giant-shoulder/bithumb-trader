@@ -194,6 +194,47 @@ class HongStrategy:
         macd_cur, signal_cur, macd_prev, signal_prev = self.calc_macd(df)
         return macd_prev >= signal_prev and macd_cur < signal_cur
 
+    # ===== 오더북 매수세 분석 =====
+
+    def check_buy_pressure(self, orderbook: dict, trades: list) -> dict:
+        """호가 및 체결 기반 매수세 분석"""
+        result = {'strong': False, 'bid_ratio': 0.0, 'trade_ratio': 0.0, 'reason': ''}
+
+        # 1. 호가 비율 (매수잔량 / 매도잔량)
+        if orderbook:
+            units = orderbook.get('orderbook_units', [])
+            total_bid = sum(float(u.get('bid_size', 0)) * float(u.get('bid_price', 0)) for u in units)
+            total_ask = sum(float(u.get('ask_size', 0)) * float(u.get('ask_price', 0)) for u in units)
+            bid_ratio = total_bid / total_ask if total_ask > 0 else 0
+            result['bid_ratio'] = bid_ratio
+        else:
+            bid_ratio = 0
+
+        # 2. 최근 체결 비율 (매수 체결 / 전체 체결)
+        if trades:
+            buy_count = sum(1 for t in trades if t.get('ask_bid') == 'BID')
+            trade_ratio = buy_count / len(trades)
+            result['trade_ratio'] = trade_ratio
+        else:
+            trade_ratio = 0
+
+        # 판단: 둘 다 기준 충족 시 매수세 강함
+        bid_ok = bid_ratio >= 1.3      # 매수잔량이 매도잔량의 1.3배 이상
+        trade_ok = trade_ratio >= 0.55  # 최근 체결 55% 이상이 매수
+
+        if bid_ok and trade_ok:
+            result['strong'] = True
+            result['reason'] = f"매수세 강함 (호가비율={bid_ratio:.2f}, 체결비율={trade_ratio:.0%})"
+        else:
+            reasons = []
+            if not bid_ok:
+                reasons.append(f"호가비율 약함({bid_ratio:.2f}<1.3)")
+            if not trade_ok:
+                reasons.append(f"체결비율 약함({trade_ratio:.0%}<55%)")
+            result['reason'] = ', '.join(reasons)
+
+        return result
+
     # ===== 종합 매수 신호 =====
 
     def check_buy_signal(self, coin: str, df: pd.DataFrame, momentum_score: float) -> dict:

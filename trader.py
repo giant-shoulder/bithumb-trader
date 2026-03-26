@@ -292,9 +292,28 @@ class AutoTrader:
             return
 
         # RSI 가장 낮은 것 선택 (추가 상승 여력 최대)
-        best_coin_data, best_signal = min(buy_candidates, key=lambda x: x[1]['rsi'])
-        logger.info(f"[최종 선택] {best_coin_data['coin']} | RSI={best_signal['rsi']:.1f}")
-        self._execute_buy(best_coin_data['coin'], best_coin_data['price'])
+        buy_candidates.sort(key=lambda x: x[1]['rsi'])
+
+        # 오더북/체결 매수세 필터 - 상위 후보부터 통과하는 첫 번째 선택
+        final_coin_data, final_signal = None, None
+        for coin_data, signal in buy_candidates:
+            coin = coin_data['coin']
+            orderbook = self.api.get_orderbook(coin)
+            trades = self.api.get_recent_trades(coin, count=100)
+            pressure = self.strategy.check_buy_pressure(orderbook, trades)
+            if pressure['strong']:
+                logger.info(f"[오더북 통과] {coin} | {pressure['reason']}")
+                final_coin_data, final_signal = coin_data, signal
+                break
+            else:
+                logger.info(f"[오더북 탈락] {coin} | {pressure['reason']}")
+
+        if final_coin_data is None:
+            logger.info("[매수 보류] 매수세 강한 후보 없음")
+            return
+
+        logger.info(f"[최종 선택] {final_coin_data['coin']} | RSI={final_signal['rsi']:.1f}")
+        self._execute_buy(final_coin_data['coin'], final_coin_data['price'])
 
     def _execute_buy(self, coin: str, price: float):
         """매수 실행"""

@@ -105,6 +105,36 @@ class BithumbAPI:
             logger.error(f"캔들 조회 실패 [{coin}]: {e}")
             return None
 
+    def get_orderbook(self, coin: str) -> dict | None:
+        """호가 조회"""
+        try:
+            resp = requests.get(
+                f"{REST_URL}/v1/orderbook",
+                params={'markets': f'KRW-{coin}'},
+                timeout=10
+            )
+            data = resp.json()
+            if isinstance(data, list) and data:
+                return data[0]
+            return None
+        except Exception as e:
+            logger.error(f"호가 조회 실패 [{coin}]: {e}")
+            return None
+
+    def get_recent_trades(self, coin: str, count: int = 100) -> list[dict]:
+        """최근 체결 내역 조회"""
+        try:
+            resp = requests.get(
+                f"{REST_URL}/v1/trades/ticks",
+                params={'market': f'KRW-{coin}', 'count': count},
+                timeout=10
+            )
+            data = resp.json()
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            logger.error(f"체결 내역 조회 실패 [{coin}]: {e}")
+            return []
+
     def get_all_krw_markets(self) -> list[str]:
         """전체 KRW 마켓 코드 조회"""
         try:
