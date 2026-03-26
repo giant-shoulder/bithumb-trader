@@ -206,20 +206,15 @@ class ClaudeStrategy:
         else:
             trade_ratio = 0
 
-        # 판단: 둘 다 기준 충족 시 매수세 강함
-        bid_ok = bid_ratio >= 1.3      # 매수잔량이 매도잔량의 1.3배 이상
+        # 판단: 둘 중 하나만 충족해도 매수세 강함으로 판단
+        bid_ok = bid_ratio >= 1.1      # 매수잔량이 매도잔량의 1.1배 이상
         trade_ok = trade_ratio >= 0.55  # 최근 체결 55% 이상이 매수
 
-        if bid_ok and trade_ok:
+        if bid_ok or trade_ok:
             result['strong'] = True
             result['reason'] = f"매수세 강함 (호가비율={bid_ratio:.2f}, 체결비율={trade_ratio:.0%})"
         else:
-            reasons = []
-            if not bid_ok:
-                reasons.append(f"호가비율 약함({bid_ratio:.2f}<1.3)")
-            if not trade_ok:
-                reasons.append(f"체결비율 약함({trade_ratio:.0%}<55%)")
-            result['reason'] = ', '.join(reasons)
+            result['reason'] = f"호가비율 약함({bid_ratio:.2f}<1.1), 체결비율 약함({trade_ratio:.0%}<55%)"
 
         return result
 

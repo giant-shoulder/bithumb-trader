@@ -287,12 +287,14 @@ class AutoTrader:
                 logger.info(f"[텔레그램] {coin} 쿨다운 중, 스킵")
                 continue
 
-            # 현재가 및 기술적 분석
+            # 현재가 및 기술적 분석 (모멘텀 스캔 무관하게 직접 분석)
             price = self.api.get_current_price(coin)
             if not price:
+                logger.info(f"[텔레그램] {coin} 현재가 조회 실패 (빗썸 미상장 가능성)")
                 continue
             df = self.api.get_ohlcv(coin, interval="1h", count=200)
             if df is None:
+                logger.info(f"[텔레그램] {coin} 캔들 데이터 없음")
                 continue
 
             buy_signal = self.strategy.check_buy_signal(coin, df, score=0)
