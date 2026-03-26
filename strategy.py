@@ -166,19 +166,6 @@ class HongStrategy:
 
     # ===== 손절/익절 판단 =====
 
-    def should_stop_loss(self, buy_price: float, current_price: float) -> bool:
-        """손절 조건: 매입가 대비 -1%"""
-        change_pct = (current_price - buy_price) / buy_price * 100
-        return change_pct <= STOP_LOSS_PCT
-
-    def should_trailing_stop(self, current_price: float, highest_price: float, buy_price: float) -> bool:
-        """트레일링 스탑: 고점 대비 TRAILING_STOP_PCT% 하락 (TRAILING_STOP_TRIGGER% 이상 수익 중일 때 활성화)"""
-        gain_pct = (highest_price - buy_price) / buy_price * 100
-        if gain_pct < TRAILING_STOP_TRIGGER:
-            return False
-        drop_from_high = (highest_price - current_price) / highest_price * 100
-        return drop_from_high >= TRAILING_STOP_PCT
-
     def should_sell_rsi(self, df: pd.DataFrame) -> bool:
         """RSI 과매수 반전: RSI가 과매수 구간에서 하락 전환"""
         rsi_cur, rsi_prev = self.calc_rsi(df)
