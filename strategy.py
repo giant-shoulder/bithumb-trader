@@ -1,6 +1,7 @@
 """
 Claude 단타 전략 - 코인 버전
 핵심: 거래대금 1등 + 정배열 + 장대양봉 돌파 매수
+손절/익절: 고정값 기반 단순 로직
 """
 import pandas as pd
 import numpy as np
@@ -8,12 +9,11 @@ from config import (
     MA_SHORT, MA_MID1, MA_MID2, MA_LONG,
     RSI_BUY_MIN, RSI_BUY_MAX,
     BULLISH_CANDLE_MIN, PREV_HIGH_PERIOD,
-    MOMENTUM_TOP_N,
-    ATR_PERIOD,
+    MIN_PRICE_KRW,
+    HARD_STOP_PCT,
+    TRAILING_ACTIVATE_PCT, TRAILING_DROP_PCT,
     HARD_TAKE_PROFIT_PCT,
-    HARD_STOP_ATR_MULT, HARD_STOP_MIN_PCT, HARD_STOP_MAX_PCT,
-    BREAKEVEN_TRIGGER_ATR, TRAILING_PHASE2_ATR,
-    PROFIT_TRIGGER_ATR, TRAILING_PHASE3_ATR,
+    MOMENTUM_KILL_RANK,
     RSI_PERIOD, RSI_OVERBOUGHT,
     BB_PERIOD, BB_STD,
 )
@@ -139,24 +139,6 @@ class ClaudeStrategy:
         std = df['close'].rolling(window=BB_PERIOD).std()
         return (ma + BB_STD * std).iloc[-1], ma.iloc[-1], (ma - BB_STD * std).iloc[-1]
 
-    def calc_atr(self, df: pd.DataFrame) -> float:
-        """ATR (Average True Range) 계산 - 코인별 변동성 지표"""
-        high = df['high']
-        low = df['low']
-        close = df['close']
-        tr = pd.concat([
-            high - low,
-            (high - close.shift(1)).abs(),
-            (low - close.shift(1)).abs(),
-        ], axis=1).max(axis=1)
-        return tr.rolling(window=ATR_PERIOD).mean().iloc[-1]
-
-    def calc_atr_pct(self, df: pd.DataFrame) -> float:
-        """ATR을 현재가 대비 퍼센트로 변환"""
-        atr = self.calc_atr(df)
-        current_price = df['close'].iloc[-1]
-        return (atr / current_price) * 100 if current_price > 0 else 1.0
-
     def calc_macd(self, df: pd.DataFrame) -> tuple:
         """MACD 계산 (macd_cur, signal_cur, macd_prev, signal_prev)"""
         exp12 = df['close'].ewm(span=12, adjust=False).mean()
@@ -165,7 +147,7 @@ class ClaudeStrategy:
         signal = macd.ewm(span=9, adjust=False).mean()
         return macd.iloc[-1], signal.iloc[-1], macd.iloc[-2], signal.iloc[-2]
 
-    # ===== 손절/익절 판단 =====
+    # ===== 기술 지표 기반 매도 보조 (df 필요, 일반 매도에만 사용) =====
 
     def should_sell_rsi(self, df: pd.DataFrame) -> bool:
         """RSI 과매수 반전: RSI가 과매수 구간에서 하락 전환"""
@@ -225,10 +207,12 @@ class ClaudeStrategy:
 
     # ===== 종합 매수 신호 =====
 
-    def check_buy_signal(self, coin: str, df: pd.DataFrame, momentum_score: float) -> dict:
+    def check_buy_signal(self, coin: str, df: pd.DataFrame, momentum_score: float,
+                         current_price: float = None) -> dict:
         """매수 신호 종합 판단 (동적 스캔 기반)
 
         필수 조건:
+          0. 최소 가격 500원 이상 (저가 코인 필터)
           1. MA5 > MA20 (단기 상승 추세)
           2. RSI 40~65 (모멘텀 있되 과열 아님)
           3. 가격 > BB 중간선 (상승 편향)
@@ -250,124 +234,138 @@ class ClaudeStrategy:
             result['fail_reasons'].append("데이터 부족")
             return result
 
+        # 현재가 결정
+        price = current_price if current_price else df['close'].iloc[-1]
+
+        # 0. 최소 가격 필터 (저가 코인 제외)
+        if price < MIN_PRICE_KRW:
+            result['fail_reasons'].append(f"가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원")
+            return result
+
         ma5 = self.calc_ma(df, MA_SHORT).iloc[-1]
         ma20 = self.calc_ma(df, MA_MID1).iloc[-1]
         rsi_cur, _ = self.calc_rsi(df)
         _, bb_mid, _ = self.calc_bollinger_bands(df)
-        current_price = df['close'].iloc[-1]
 
         result['rsi'] = rsi_cur
 
         # 1. MA5 > MA20 (필수)
         if ma5 <= ma20:
-            result['fail_reasons'].append(f"MA5({ma5:.0f}) ≤ MA20({ma20:.0f})")
+            result['fail_reasons'].append(f"MA5({ma5:.0f}) <= MA20({ma20:.0f})")
             return result
-        result['reasons'].append("MA5 > MA20 ✓")
+        result['reasons'].append("MA5 > MA20")
 
         # 2. RSI 매수 구간 (필수)
         if not (RSI_BUY_MIN <= rsi_cur <= RSI_BUY_MAX):
             result['fail_reasons'].append(f"RSI {rsi_cur:.1f} (기준: {RSI_BUY_MIN}~{RSI_BUY_MAX})")
             return result
-        result['reasons'].append(f"RSI {rsi_cur:.1f} ✓")
+        result['reasons'].append(f"RSI {rsi_cur:.1f}")
 
         # 3. 가격 > BB 중간선 (필수)
-        if current_price <= bb_mid:
-            result['fail_reasons'].append(f"가격({current_price:.0f}) ≤ BB중간({bb_mid:.0f})")
+        if price <= bb_mid:
+            result['fail_reasons'].append(f"가격({price:.0f}) <= BB중간({bb_mid:.0f})")
             return result
-        result['reasons'].append("BB 중간선 위 ✓")
+        result['reasons'].append("BB 중간선 위")
 
         # 4. 거래대금 급증 (보너스)
         if self.is_volume_surge(df):
-            result['reasons'].append("거래대금 급증 ✓")
+            result['reasons'].append("거래대금 급증")
 
         # 5. 전고점 돌파 (보너스)
         if self.is_breaking_high(df):
-            result['reasons'].append("전고점 돌파 ✓")
+            result['reasons'].append("전고점 돌파")
 
         # 6. 정배열 (보너스)
         if self.is_bullish_alignment(df):
-            result['reasons'].append("정배열 ✓")
+            result['reasons'].append("정배열")
 
         result['buy'] = True
         return result
 
-    # ===== 매도 신호 =====
+    # ===== 매도 신호 (하드 손절/익절 - df 불필요) =====
 
-    def check_sell_signal(self, coin: str, df: pd.DataFrame,
-                          buy_price: float, current_price: float,
-                          volume_rank: int, highest_price: float = None) -> dict:
-        """ATR 기반 3단계 매도 신호
+    def check_hard_stop(self, coin: str, buy_price: float, current_price: float) -> dict:
+        """하드 손절/익절 판단 - 현재가만으로 즉시 판단, MIN_HOLD_SECONDS 무관
 
-        Phase 1 (매수 직후): 하드 손절만 (ATR × 1.5, 최소 0.8% ~ 최대 3%)
-        Phase 2 (수익 >= 1×ATR): 본전 컷 + 트레일링 (ATR × 0.7)
-        Phase 3 (수익 >= 2×ATR): 타이트한 트레일링 (ATR × 0.5) + RSI/BB 매도
+        - 하드 손절: -1.2% (항상 즉시)
+        - 하드 익절: +4% (항상 즉시)
         """
         result = {
             'coin': coin,
             'sell': False,
             'reason': '',
-            'emergency': False
+            'is_stop_loss': False,
+        }
+
+        pct = (current_price - buy_price) / buy_price * 100
+
+        # 하드 손절 (-1.2%)
+        if pct <= -HARD_STOP_PCT:
+            result['sell'] = True
+            result['is_stop_loss'] = True
+            result['reason'] = f"하드 손절: {pct:.2f}% (기준: -{HARD_STOP_PCT}%)"
+            return result
+
+        # 하드 익절 (+4%)
+        if pct >= HARD_TAKE_PROFIT_PCT:
+            result['sell'] = True
+            result['is_stop_loss'] = False
+            result['reason'] = f"하드 익절: {pct:.2f}% (기준: +{HARD_TAKE_PROFIT_PCT}%)"
+            return result
+
+        return result
+
+    def check_sell_signal(self, coin: str, buy_price: float, current_price: float,
+                          volume_rank: int, highest_price: float = None,
+                          df: pd.DataFrame = None) -> dict:
+        """일반 매도 신호 - MIN_HOLD_SECONDS 경과 후에만 호출
+
+        트레일링 스탑, 모멘텀 소멸, RSI/BB/MACD (df 있을 때만)
+        """
+        result = {
+            'coin': coin,
+            'sell': False,
+            'reason': '',
+            'is_stop_loss': False,
         }
 
         if highest_price is None:
             highest_price = current_price
 
         pct = (current_price - buy_price) / buy_price * 100
-        atr_pct = self.calc_atr_pct(df)
 
-        # 하드 손절 한계 계산 (ATR 기반, 클램프)
-        hard_stop = min(max(atr_pct * HARD_STOP_ATR_MULT, HARD_STOP_MIN_PCT), HARD_STOP_MAX_PCT)
-
-        # Phase 판단 (ATR 배수 기준)
-        gain_in_atr = pct / atr_pct if atr_pct > 0 else 0
-
-        # === 하드 익절 (모든 Phase 공통) ===
-        if pct >= HARD_TAKE_PROFIT_PCT:
-            result['sell'] = True
-            result['reason'] = f"하드 익절: {pct:.2f}% (기준: +{HARD_TAKE_PROFIT_PCT}%)"
-            return result
-
-        # === 하드 손절 (모든 Phase 공통) ===
-        if pct <= -hard_stop:
-            result['sell'] = True
-            result['emergency'] = True
-            result['reason'] = f"하드 손절: {pct:.2f}% (ATR 기반 한계: -{hard_stop:.2f}%)"
-            return result
-
-        # === Phase 3: 수익 >= 2×ATR ===
-        if gain_in_atr >= PROFIT_TRIGGER_ATR:
-            trailing_pct = atr_pct * TRAILING_PHASE3_ATR
+        # 트레일링 스탑: +1% 수익 달성 후, 고점 대비 -0.5% 하락 시 매도
+        if pct >= TRAILING_ACTIVATE_PCT and highest_price > buy_price:
             drop_from_high = (highest_price - current_price) / highest_price * 100
-            if drop_from_high >= trailing_pct:
+            if drop_from_high >= TRAILING_DROP_PCT:
                 result['sell'] = True
-                result['reason'] = f"Phase3 트레일링: 고점 대비 -{drop_from_high:.2f}% (수익 {pct:+.2f}%)"
+                result['is_stop_loss'] = False
+                result['reason'] = (f"트레일링 스탑: 고점 대비 -{drop_from_high:.2f}% "
+                                    f"(수익 {pct:+.2f}%, 고점={highest_price:,.0f})")
                 return result
+
+        # 모멘텀 소멸: 순위 40위 밖
+        if volume_rank > MOMENTUM_KILL_RANK:
+            result['sell'] = True
+            result['is_stop_loss'] = True  # 모멘텀 소멸은 손절 쿨다운 적용
+            result['reason'] = f"모멘텀 소멸: 거래대금 {volume_rank}위 (기준: {MOMENTUM_KILL_RANK}위)"
+            return result
+
+        # df가 있으면 기술 지표 기반 매도 체크 (수익 구간에서만)
+        if df is not None and pct > 0:
             if self.should_sell_rsi(df):
                 result['sell'] = True
-                result['reason'] = f"RSI 과매수 반전 (수익 {pct:+.2f}%, Phase3)"
+                result['reason'] = f"RSI 과매수 반전 (수익 {pct:+.2f}%)"
                 return result
+
             if self.should_sell_bb(df, current_price):
                 result['sell'] = True
-                result['reason'] = f"BB 상단 도달 (수익 {pct:+.2f}%, Phase3)"
+                result['reason'] = f"BB 상단 도달 (수익 {pct:+.2f}%)"
                 return result
 
-        # === Phase 2: 수익 >= 1×ATR ===
-        elif gain_in_atr >= BREAKEVEN_TRIGGER_ATR:
-            if pct <= 0:
+            if self.should_sell_macd(df):
                 result['sell'] = True
-                result['reason'] = f"본전 컷: {pct:.2f}% (Phase2 진입 후 반락)"
+                result['reason'] = f"MACD 데드크로스 (수익 {pct:+.2f}%)"
                 return result
-            trailing_pct = atr_pct * TRAILING_PHASE2_ATR
-            drop_from_high = (highest_price - current_price) / highest_price * 100
-            if drop_from_high >= trailing_pct:
-                result['sell'] = True
-                result['reason'] = f"Phase2 트레일링: 고점 대비 -{drop_from_high:.2f}% (수익 {pct:+.2f}%)"
-                return result
-
-        # === 모멘텀 소멸 (모든 Phase 공통) ===
-        if volume_rank > MOMENTUM_TOP_N * 2:
-            result['sell'] = True
-            result['reason'] = f"모멘텀 소멸: 스캔 {volume_rank}위 밖"
-            return result
 
         return result

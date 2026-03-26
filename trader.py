@@ -5,7 +5,7 @@ Claude 전략 기반 빗섬 자동매매
 import time
 import queue
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from bithumb_api import BithumbAPI
 from strategy import ClaudeStrategy
 from logger import get_logger, TradeLogger
@@ -13,10 +13,17 @@ from config import (
     MAX_POSITION_KRW, BUY_UNIT_KRW, BUY_SPLIT,
     POLLING_INTERVAL_IDLE, POLLING_INTERVAL_ACTIVE,
     MOMENTUM_TOP_N, MIN_VOLUME_24H_KRW,
-    MIN_HOLD_SECONDS, BUY_COOLDOWN_SECONDS,
+    MIN_HOLD_SECONDS,
+    COOLDOWN_AFTER_STOP_LOSS, COOLDOWN_AFTER_TAKE_PROFIT,
     DAILY_LOSS_LIMIT_PCT,
     BUY_LIMIT_OFFSET_PCT,
+    MAX_CONCURRENT_POSITIONS,
+    MIN_PRICE_KRW,
+    TRADING_HOUR_START, TRADING_HOUR_END,
+    BUY_CANDLE_INTERVAL, BUY_CANDLE_COUNT,
 )
+
+KST = timezone(timedelta(hours=9))
 
 logger = get_logger()
 trade_logger = TradeLogger()
@@ -53,14 +60,17 @@ class AutoTrader:
         self.api = BithumbAPI()
         self.strategy = ClaudeStrategy()
         self.positions: dict[str, Position] = {}
-        self.sell_cooldown: dict[str, float] = {}
+        self.sell_cooldown: dict[str, float] = {}  # coin -> cooldown_end_timestamp
         self.is_running = False
         self.dry_run = dry_run
         self.daily_pnl_krw = 0.0
         self.daily_reset_date = datetime.now().date()
         self.telegram_queue: queue.Queue = queue.Queue()
         logger.info("=" * 50)
-        logger.info("빗섬 자동매매 시스템 시작 (Claude 전략)")
+        logger.info("빗섬 자동매매 시스템 시작 (Claude 전략 v2)")
+        logger.info(f"설정: 하드손절 -1.2% | 트레일링 +1%/-0.5% | 익절 +4%")
+        logger.info(f"설정: 최소가격 {MIN_PRICE_KRW}원 | 거래시간 {TRADING_HOUR_START}~{TRADING_HOUR_END}시")
+        logger.info(f"설정: 최대 포지션 {MAX_CONCURRENT_POSITIONS}개 | 캔들 {BUY_CANDLE_INTERVAL}")
         logger.info("=" * 50)
         self._load_existing_positions()
 
@@ -87,6 +97,13 @@ class AutoTrader:
         except Exception as e:
             logger.error(f"기존 포지션 로드 실패: {e}")
 
+    # ===== 거래 시간 체크 =====
+
+    def _is_trading_hours(self) -> bool:
+        """KST 기준 거래 허용 시간인지 확인 (매수 전용, 매도는 항상 가능)"""
+        now_kst = datetime.now(KST)
+        return TRADING_HOUR_START <= now_kst.hour < TRADING_HOUR_END
+
     # ===== 메인 루프 =====
 
     def run(self):
@@ -95,7 +112,8 @@ class AutoTrader:
         while self.is_running:
             try:
                 logger.info(f"\n{'='*40}")
-                logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] 전략 실행 중...")
+                now_kst = datetime.now(KST)
+                logger.info(f"[{now_kst.strftime('%H:%M:%S')}] 전략 실행 중...")
 
                 # 일일 손실 한도 체크
                 if not self._check_daily_loss_limit():
@@ -113,16 +131,21 @@ class AutoTrader:
 
                 self._log_market_overview(top_coins)
 
-                # 2. 보유 포지션 관리 (매도 우선)
+                # 2. 보유 포지션 관리 (매도 우선 - 항상 실행)
                 self._manage_positions(top_coins)
 
-                # 3. 텔레그램 신호 처리 (우선순위 매수)
-                self._process_telegram_signals()
+                # 3. 텔레그램 신호 처리 (거래 시간 내에만)
+                if self._is_trading_hours():
+                    self._process_telegram_signals()
 
-                # 4. 신규 매수 탐색
-                self._scan_for_entry(top_coins)
+                # 4. 신규 매수 탐색 (거래 시간 내에만)
+                if self._is_trading_hours():
+                    self._scan_for_entry(top_coins)
+                else:
+                    logger.info(f"[거래시간 외] 현재 {now_kst.strftime('%H:%M')} KST "
+                                f"(허용: {TRADING_HOUR_START}:00~{TRADING_HOUR_END}:00) - 매수 탐색 스킵")
 
-                # 4. 포지션 유무에 따라 대기 시간 결정
+                # 5. 포지션 유무에 따라 대기 시간 결정
                 interval = POLLING_INTERVAL_ACTIVE if self.positions else POLLING_INTERVAL_IDLE
                 logger.info(f"다음 실행: {interval}초 후 ({'포지션 있음' if self.positions else '대기 중'})")
                 time.sleep(interval)
@@ -162,7 +185,7 @@ class AutoTrader:
         if self.daily_pnl_krw < 0:
             loss_pct = abs(self.daily_pnl_krw) / MAX_POSITION_KRW * 100
             if loss_pct >= DAILY_LOSS_LIMIT_PCT:
-                logger.warning(f"일일 손실 한도 도달: {self.daily_pnl_krw:,.0f}원 ({loss_pct:.1f}%) → 매수 중단")
+                logger.warning(f"일일 손실 한도 도달: {self.daily_pnl_krw:,.0f}원 ({loss_pct:.1f}%) -> 매수 중단")
                 return False
         return True
 
@@ -184,21 +207,21 @@ class AutoTrader:
     # ===== 포지션 관리 (매도) =====
 
     def _manage_positions(self, top_coins: list):
-        """보유 포지션 매도 판단"""
+        """보유 포지션 매도 판단
+
+        핵심 수정: 하드 손절(-1.2%)은 MIN_HOLD_SECONDS와 무관하게 항상 체크.
+        트레일링/RSI/BB/MACD 등 일반 매도는 MIN_HOLD_SECONDS 경과 후에만.
+        """
         if not self.positions:
             return
 
         coins_to_sell = []
-        # 스캔 결과 내 순위 (없으면 999 → 모멘텀 소멸로 간주)
+        # 스캔 결과 내 순위 (없으면 999 -> 모멘텀 소멸로 간주)
         volume_rank_map = {c['coin']: i+1 for i, c in enumerate(top_coins)}
 
         for coin, pos in self.positions.items():
             current_price = self.api.get_current_price(coin)
             if not current_price:
-                continue
-
-            df = self.api.get_ohlcv(coin, interval="1h", count=200)
-            if df is None:
                 continue
 
             # 최고가 갱신 (트레일링 스탑용)
@@ -208,28 +231,33 @@ class AutoTrader:
             pnl_pct = (current_price - pos.buy_price) / pos.buy_price * 100
             rank = volume_rank_map.get(coin, 999)
 
-            # 최소 보유시간 체크
-            hold_secs = (datetime.now() - datetime.strptime(pos.entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
-            if hold_secs < MIN_HOLD_SECONDS:
-                logger.debug(f"[{coin}] 최소 보유시간 미충족: {hold_secs:.0f}s / {MIN_HOLD_SECONDS}s")
+            # === 1단계: 하드 손절/익절 (항상, 즉시, MIN_HOLD_SECONDS 무관) ===
+            hard_signal = self.strategy.check_hard_stop(coin, pos.buy_price, current_price)
+            if hard_signal['sell']:
+                logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
+                            f"손익={pnl_pct:+.1f}% | [즉시 매도] {hard_signal['reason']}")
+                coins_to_sell.append((coin, pos, current_price, hard_signal))
                 continue
 
+            # === 2단계: 최소 보유시간 체크 (일반 매도에만 적용) ===
+            hold_secs = (datetime.now() - datetime.strptime(pos.entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
+            if hold_secs < MIN_HOLD_SECONDS:
+                logger.debug(f"[{coin}] 최소 보유시간 미충족: {hold_secs:.0f}s / {MIN_HOLD_SECONDS}s "
+                             f"(손익={pnl_pct:+.1f}%)")
+                continue
+
+            # === 3단계: 일반 매도 신호 (트레일링/모멘텀/RSI/BB/MACD) ===
+            # 5분봉은 매도에는 불필요하지만 RSI/BB/MACD 체크용으로 가져옴
+            df = self.api.get_ohlcv(coin, interval="5m", count=200)
+
             signal = self.strategy.check_sell_signal(
-                coin, df, pos.buy_price, current_price, rank, pos.highest_price
+                coin, pos.buy_price, current_price, rank,
+                pos.highest_price, df
             )
 
-            # 현재 Phase 표시
-            atr_pct = self.strategy.calc_atr_pct(df)
-            gain_in_atr = pnl_pct / atr_pct if atr_pct > 0 else 0
-            drop_from_high = (pos.highest_price - current_price) / pos.highest_price * 100
-            if gain_in_atr >= 2.0:
-                phase_str = f"Phase3 🎯 | 고점대비 -{drop_from_high:.2f}%"
-            elif gain_in_atr >= 1.0:
-                phase_str = f"Phase2 📈 | 고점대비 -{drop_from_high:.2f}%"
-            else:
-                phase_str = f"Phase1 🛡️ | ATR={atr_pct:.2f}%"
-
-            status_str = '⚠️ 매도신호' if signal['sell'] else f'보유중 [{phase_str}]'
+            # 상태 로그
+            drop_from_high = (pos.highest_price - current_price) / pos.highest_price * 100 if pos.highest_price > 0 else 0
+            status_str = f"매도신호: {signal['reason']}" if signal['sell'] else f"보유중 | 고점대비 -{drop_from_high:.2f}%"
             logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
                         f"손익={pnl_pct:+.1f}% | {status_str}")
 
@@ -237,14 +265,22 @@ class AutoTrader:
                 coins_to_sell.append((coin, pos, current_price, signal))
 
         for coin, pos, price, signal in coins_to_sell:
-            self._execute_sell(coin, pos, price, signal['reason'])
+            self._execute_sell(coin, pos, price, signal['reason'], signal.get('is_stop_loss', False))
 
-    def _execute_sell(self, coin: str, pos: Position, price: float, reason: str):
-        """매도 실행"""
+    def _execute_sell(self, coin: str, pos: Position, price: float, reason: str,
+                      is_stop_loss: bool = False):
+        """매도 실행
+
+        Args:
+            is_stop_loss: True면 손절 쿨다운(1시간) 적용, False면 익절 쿨다운(10분) 적용
+        """
         logger.info(f"[매도 실행] {coin} | 사유: {reason}")
         if self.dry_run:
             logger.info(f"[DRY] 매도 생략: {coin} {pos.quantity}")
             del self.positions[coin]
+            # 쿨다운 적용 (드라이런에서도)
+            cooldown = COOLDOWN_AFTER_STOP_LOSS if is_stop_loss else COOLDOWN_AFTER_TAKE_PROFIT
+            self.sell_cooldown[coin] = time.time() + cooldown
             return
         # 실제 잔고 조회 (추적 수량과 오차 방지)
         actual_qty = self.api.get_coin_balance(coin)
@@ -262,8 +298,15 @@ class AutoTrader:
             pnl_krw = (price - pos.buy_price) / pos.buy_price * pos.total_amount
             self.daily_pnl_krw += pnl_krw
             del self.positions[coin]
-            self.sell_cooldown[coin] = time.time() + BUY_COOLDOWN_SECONDS
-            logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}% ({pnl_krw:+,.0f}원) | 오늘 누적: {self.daily_pnl_krw:+,.0f}원")
+
+            # 쿨다운 적용: 손절이면 1시간, 익절이면 10분
+            cooldown = COOLDOWN_AFTER_STOP_LOSS if is_stop_loss else COOLDOWN_AFTER_TAKE_PROFIT
+            self.sell_cooldown[coin] = time.time() + cooldown
+            cooldown_label = "1시간" if is_stop_loss else "10분"
+
+            logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}% ({pnl_krw:+,.0f}원) "
+                        f"| 오늘 누적: {self.daily_pnl_krw:+,.0f}원 "
+                        f"| 쿨다운: {cooldown_label}")
 
     # ===== 텔레그램 신호 처리 =====
 
@@ -284,7 +327,13 @@ class AutoTrader:
                 logger.info(f"[텔레그램] {coin} 이미 보유 중, 스킵")
                 continue
             if time.time() <= self.sell_cooldown.get(coin, 0):
-                logger.info(f"[텔레그램] {coin} 쿨다운 중, 스킵")
+                remaining = self.sell_cooldown[coin] - time.time()
+                logger.info(f"[텔레그램] {coin} 쿨다운 중 (잔여 {remaining:.0f}초), 스킵")
+                continue
+
+            # 최대 포지션 수 체크
+            if len(self.positions) >= MAX_CONCURRENT_POSITIONS:
+                logger.info(f"[텔레그램] 최대 포지션 수 도달 ({MAX_CONCURRENT_POSITIONS}개), 스킵")
                 continue
 
             # 현재가 및 기술적 분석 (모멘텀 스캔 무관하게 직접 분석)
@@ -292,7 +341,13 @@ class AutoTrader:
             if not price:
                 logger.info(f"[텔레그램] {coin} 현재가 조회 실패 (빗썸 미상장 가능성)")
                 continue
-            df = self.api.get_ohlcv(coin, interval="1h", count=200)
+
+            # 최소 가격 필터
+            if price < MIN_PRICE_KRW:
+                logger.info(f"[텔레그램] {coin} 가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원, 스킵")
+                continue
+
+            df = self.api.get_ohlcv(coin, interval=BUY_CANDLE_INTERVAL, count=BUY_CANDLE_COUNT)
             if df is None:
                 logger.info(f"[텔레그램] {coin} 캔들 데이터 없음")
                 continue
@@ -305,13 +360,18 @@ class AutoTrader:
                 logger.info(f"[텔레그램] {coin} 오더북 미통과: {pressure['reason']}")
                 continue
 
-            logger.info(f"[텔레그램 매수] {coin} | {pressure['reason']} → 매수 실행")
+            logger.info(f"[텔레그램 매수] {coin} | {pressure['reason']} -> 매수 실행")
             self._execute_buy(coin, price, source="telegram")
 
     # ===== 신규 매수 탐색 =====
 
     def _scan_for_entry(self, top_coins: list):
-        """신규 매수 후보 탐색 - 조건 통과 종목 중 RSI 가장 낮은 것 선택"""
+        """신규 매수 후보 탐색 - 5분봉 사용, 최대 포지션 수 제한"""
+        # 최대 포지션 수 체크
+        if len(self.positions) >= MAX_CONCURRENT_POSITIONS:
+            logger.info(f"[매수 탐색] 최대 포지션 수 도달 ({len(self.positions)}/{MAX_CONCURRENT_POSITIONS}개)")
+            return
+
         now = time.time()
         candidates = [
             c for c in top_coins
@@ -325,11 +385,20 @@ class AutoTrader:
         buy_candidates = []
         for coin_data in candidates:
             coin = coin_data['coin']
-            df = self.api.get_ohlcv(coin, interval="1h", count=200)
+            price = coin_data.get('price', 0)
+
+            # 최소 가격 필터 (API 호출 전에 사전 필터링)
+            if price and price < MIN_PRICE_KRW:
+                logger.debug(f"[{coin}] 가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원, 스킵")
+                continue
+
+            # 5분봉 200개 사용
+            df = self.api.get_ohlcv(coin, interval=BUY_CANDLE_INTERVAL, count=BUY_CANDLE_COUNT)
             if df is None:
                 continue
 
-            signal = self.strategy.check_buy_signal(coin, df, coin_data['score'])
+            signal = self.strategy.check_buy_signal(coin, df, coin_data['score'],
+                                                     current_price=price)
 
             if signal['buy']:
                 buy_candidates.append((coin_data, signal))
@@ -366,7 +435,19 @@ class AutoTrader:
         self._execute_buy(final_coin_data['coin'], final_coin_data['price'], source="momentum")
 
     def _execute_buy(self, coin: str, price: float, source: str = "momentum"):
-        """매수 실행"""
+        """매수 실행 - 거래시간/최대포지션/최소가격 체크 포함"""
+
+        # 거래 시간 체크
+        if not self._is_trading_hours():
+            now_kst = datetime.now(KST)
+            logger.info(f"[매수 차단] {coin} | 거래시간 외 ({now_kst.strftime('%H:%M')} KST)")
+            return
+
+        # 최소 가격 체크
+        if price < MIN_PRICE_KRW:
+            logger.info(f"[매수 차단] {coin} | 가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원")
+            return
+
         # 이미 보유 중이면 불타기
         if coin in self.positions:
             pos = self.positions[coin]
@@ -377,6 +458,11 @@ class AutoTrader:
             logger.info(f"[불타기] {coin} | {pos.buy_count+1}/{BUY_SPLIT}회차")
             krw = BUY_UNIT_KRW
         else:
+            # 최대 포지션 수 체크 (신규 매수만)
+            if len(self.positions) >= MAX_CONCURRENT_POSITIONS:
+                logger.info(f"[매수 차단] {coin} | 최대 포지션 수 도달 ({MAX_CONCURRENT_POSITIONS}개)")
+                return
+
             # 신규 매수
             krw_balance = self.api.get_krw_balance()
             MIN_ORDER_KRW = 5000  # 빗썸 최소 주문금액
@@ -428,5 +514,10 @@ class AutoTrader:
                     f"  {coin}: 매수={pos.buy_price:,.0f} 현재={price:,.0f} "
                     f"손익={pnl:+.1f}% | {pos.buy_count}/{BUY_SPLIT}회"
                 )
+        lines.append(f"포지션 수: {len(self.positions)}/{MAX_CONCURRENT_POSITIONS}")
+        now_kst = datetime.now(KST)
+        trading = "O" if self._is_trading_hours() else "X"
+        lines.append(f"거래시간: {now_kst.strftime('%H:%M')} KST ({trading})")
+        lines.append(f"오늘 누적 손익: {self.daily_pnl_krw:+,.0f}원")
         lines.append(f"{'='*40}")
         return "\n".join(lines)
