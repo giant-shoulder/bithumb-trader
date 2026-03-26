@@ -37,9 +37,9 @@ BUY_UNIT_KRW = MAX_POSITION_KRW // BUY_SPLIT  # 1회 매수 금액
 ATR_PERIOD = 14               # ATR 계산 기간
 
 # Phase 1: 방어 - 하드 손절 (ATR 기반, 클램프)
-HARD_STOP_ATR_MULT = 1.5      # 하드 손절 = ATR × 1.5
+HARD_STOP_ATR_MULT = 1.0      # 하드 손절 = ATR × 1.0
 HARD_STOP_MIN_PCT = 0.8       # 하드 손절 최소값 (%)
-HARD_STOP_MAX_PCT = 3.0       # 하드 손절 최대값 (%)
+HARD_STOP_MAX_PCT = 1.5       # 하드 손절 최대값 (%)
 
 # Phase 2: 본전 확보 (수익 >= 0.5×ATR)
 BREAKEVEN_TRIGGER_ATR = 0.5   # 본전 컷 활성화 기준 (ATR 배수)
