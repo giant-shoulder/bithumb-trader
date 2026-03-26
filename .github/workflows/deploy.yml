@@ -1,0 +1,22 @@
+name: Deploy to Oracle VM
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          script: |
+            cd ~/bithumb-trader
+            git pull
+            pkill -f main.py || true
+            nohup python3 main.py > /dev/null 2>&1 &
+            echo "배포 완료: $(date)"
