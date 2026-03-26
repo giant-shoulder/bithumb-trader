@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>빗썸 트레이더 대시보드</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: 'Segoe UI', sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    header h1 { font-size: 18px; }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .status-badge {
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .status-active { background: #1a4731; color: #3fb950; border: 1px solid #238636; }
+    .status-inactive { background: #3d1a1a; color: #f85149; border: 1px solid #da3633; }
+    .status-unknown { background: #2d2d2d; color: #8b949e; border: 1px solid #444; }
+    .controls { display: flex; gap: 8px; }
+    .btn {
+      padding: 6px 14px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .btn-start { background: #238636; color: #fff; }
+    .btn-start:hover { background: #2ea043; }
+    .btn-stop { background: #da3633; color: #fff; }
+    .btn-stop:hover { background: #f85149; }
+    .btn-restart { background: #9e6a03; color: #fff; }
+    .btn-restart:hover { background: #d29922; }
+    .btn-logout { background: transparent; color: #8b949e; border: 1px solid #30363d; }
+    .btn-logout:hover { color: #e6edf3; border-color: #8b949e; }
+    .log-container {
+      flex: 1;
+      padding: 16px 24px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .log-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .log-header span { font-size: 13px; color: #8b949e; }
+    .log-box {
+      flex: 1;
+      background: #010409;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 14px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .log-line { white-space: pre-wrap; word-break: break-all; }
+    .log-line.info { color: #79c0ff; }
+    .log-line.warning { color: #d29922; }
+    .log-line.error { color: #f85149; }
+    .log-line.buy { color: #3fb950; }
+    .log-line.sell { color: #ff7b72; }
+    .log-line.default { color: #8b949e; }
+    #autoScroll {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: #8b949e;
+      cursor: pointer;
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #3fb950;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🤖 빗썸 트레이더 대시보드</h1>
+    <div class="header-right">
+      <span id="statusBadge" class="status-badge status-unknown">확인 중...</span>
+      <div class="controls">
+        <button class="btn btn-start" onclick="control('start')">▶ 시작</button>
+        <button class="btn btn-restart" onclick="control('restart')">↺ 재시작</button>
+        <button class="btn btn-stop" onclick="control('stop')">■ 중지</button>
+        <a href="/logout"><button class="btn btn-logout">로그아웃</button></a>
+      </div>
+    </div>
+  </header>
+
+  <div class="log-container">
+    <div class="log-header">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div class="dot"></div>
+        <span>실시간 로그</span>
+      </div>
+      <label id="autoScroll">
+        <input type="checkbox" id="autoScrollCheck" checked> 자동 스크롤
+      </label>
+    </div>
+    <div class="log-box" id="logBox"></div>
+  </div>
+
+  <script>
+    const logBox = document.getElementById('logBox');
+    const autoScrollCheck = document.getElementById('autoScrollCheck');
+
+    function colorLine(text) {
+      if (text.includes('ERROR')) return 'error';
+      if (text.includes('WARNING')) return 'warning';
+      if (text.includes('매수 완료') || text.includes('매수신호') || text.includes('[매수')) return 'buy';
+      if (text.includes('매도 완료') || text.includes('[매도')) return 'sell';
+      if (text.includes('INFO')) return 'info';
+      return 'default';
+    }
+
+    function appendLog(text) {
+      const div = document.createElement('div');
+      div.className = `log-line ${colorLine(text)}`;
+      div.textContent = text;
+      logBox.appendChild(div);
+      if (logBox.children.length > 1000) {
+        logBox.removeChild(logBox.firstChild);
+      }
+      if (autoScrollCheck.checked) {
+        logBox.scrollTop = logBox.scrollHeight;
+      }
+    }
+
+    const es = new EventSource('/api/logs');
+    es.onmessage = e => appendLog(e.data);
+    es.onerror = () => appendLog('--- 연결 끊김, 재연결 중... ---');
+
+    function updateStatus() {
+      fetch('/api/status')
+        .then(r => r.json())
+        .then(data => {
+          const badge = document.getElementById('statusBadge');
+          if (data.status === 'active') {
+            badge.className = 'status-badge status-active';
+            badge.textContent = '● 실행 중';
+          } else if (data.status === 'inactive') {
+            badge.className = 'status-badge status-inactive';
+            badge.textContent = '● 중지됨';
+          } else {
+            badge.className = 'status-badge status-unknown';
+            badge.textContent = data.status;
+          }
+        });
+    }
+
+    function control(action) {
+      fetch(`/api/control/${action}`, { method: 'POST' })
+        .then(() => setTimeout(updateStatus, 1500));
+    }
+
+    updateStatus();
+    setInterval(updateStatus, 10000);
+  </script>
+</body>
+</html>

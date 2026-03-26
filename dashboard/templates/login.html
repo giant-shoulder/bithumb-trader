@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>빗썸 트레이더 - 로그인</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: 'Segoe UI', sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+    .login-box {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 40px;
+      width: 360px;
+    }
+    h1 { font-size: 20px; margin-bottom: 8px; }
+    p.sub { color: #8b949e; font-size: 14px; margin-bottom: 28px; }
+    label { display: block; font-size: 13px; color: #8b949e; margin-bottom: 6px; }
+    input[type="password"] {
+      width: 100%;
+      padding: 10px 14px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #e6edf3;
+      font-size: 15px;
+      margin-bottom: 16px;
+    }
+    input[type="password"]:focus { outline: none; border-color: #58a6ff; }
+    button {
+      width: 100%;
+      padding: 10px;
+      background: #238636;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    button:hover { background: #2ea043; }
+    .error {
+      background: #3d1a1a;
+      border: 1px solid #f85149;
+      color: #f85149;
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-box">
+    <h1>🤖 빗썸 트레이더</h1>
+    <p class="sub">모니터링 대시보드</p>
+    {% if error %}
+    <div class="error">{{ error }}</div>
+    {% endif %}
+    <form method="post">
+      <label>비밀번호</label>
+      <input type="password" name="password" autofocus placeholder="비밀번호 입력">
+      <button type="submit">로그인</button>
+    </form>
+  </div>
+</body>
+</html>
