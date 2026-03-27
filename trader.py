@@ -19,7 +19,7 @@ from config import (
     BUY_LIMIT_OFFSET_PCT,
     MAX_CONCURRENT_POSITIONS,
     MIN_PRICE_KRW,
-    TRADING_HOUR_START, TRADING_HOUR_END,
+    TRADING_BLOCK_START, TRADING_BLOCK_END,
     BUY_CANDLE_INTERVAL, BUY_CANDLE_COUNT,
     COIN_BLACKLIST,
 )
@@ -103,7 +103,7 @@ class AutoTrader:
     def _is_trading_hours(self) -> bool:
         """KST 기준 거래 허용 시간인지 확인 (매수 전용, 매도는 항상 가능)"""
         now_kst = datetime.now(KST)
-        return TRADING_HOUR_START <= now_kst.hour < TRADING_HOUR_END
+        return not (TRADING_BLOCK_START <= now_kst.hour < TRADING_BLOCK_END)
 
     # ===== 메인 루프 =====
 
