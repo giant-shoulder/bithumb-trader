@@ -404,9 +404,10 @@ class AutoTrader:
                 buy_candidates.append((coin_data, signal))
                 logger.info(f"[매수 후보] {coin} | RSI={signal['rsi']:.1f} | {' | '.join(signal['reasons'])}")
             else:
-                logger.debug(f"[{coin}] 매수 보류: {', '.join(signal['fail_reasons'])}")
+                logger.info(f"[탈락] {coin} | {', '.join(signal['fail_reasons'])}")
 
         if not buy_candidates:
+            logger.info("[매수 탐색 완료] 조건 통과 종목 없음")
             return
 
         # RSI 가장 낮은 것 선택 (추가 상승 여력 최대)
