@@ -28,7 +28,7 @@ RSI_BUY_MIN = 35             # 매수 RSI 하한 (과매도 제외)
 RSI_BUY_MAX = 70             # 매수 RSI 상한 (과열 제외)
 BULLISH_CANDLE_MIN = 3.0     # 장대양봉 최소 크기 (시가 대비 %)
 PREV_HIGH_PERIOD = 120       # 전고점 기간 (캔들 수)
-MIN_PRICE_KRW = 500          # 최소 코인 가격 (원) - 저가 코인 필터
+MIN_PRICE_KRW = 10           # 최소 코인 가격 (원) - 1원짜리 극소가 코인 필터
 
 # 매수 실행
 MAX_POSITION_KRW = 500000    # 코인당 최대 투자금액 (원)

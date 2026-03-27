@@ -394,7 +394,7 @@ class AutoTrader:
 
             # 최소 가격 필터 (API 호출 전에 사전 필터링)
             if price and price < MIN_PRICE_KRW:
-                logger.debug(f"[{coin}] 가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원, 스킵")
+                logger.info(f"[탈락] {coin} | 가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원")
                 continue
 
             # 5분봉 200개 사용
