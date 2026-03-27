@@ -247,6 +247,11 @@ class ClaudeStrategy:
         rsi_cur, _ = self.calc_rsi(df)
         _, bb_mid, _ = self.calc_bollinger_bands(df)
 
+        # RSI NaN 체크 (스테이블 코인 등 변동 없는 경우)
+        if pd.isna(rsi_cur):
+            result['fail_reasons'].append("RSI 계산 불가")
+            return result
+
         result['rsi'] = rsi_cur
 
         # 1. MA5 > MA20 (필수)

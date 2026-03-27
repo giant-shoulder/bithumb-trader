@@ -21,6 +21,7 @@ from config import (
     MIN_PRICE_KRW,
     TRADING_HOUR_START, TRADING_HOUR_END,
     BUY_CANDLE_INTERVAL, BUY_CANDLE_COUNT,
+    COIN_BLACKLIST,
 )
 
 KST = timezone(timedelta(hours=9))
@@ -386,6 +387,10 @@ class AutoTrader:
         for coin_data in candidates:
             coin = coin_data['coin']
             price = coin_data.get('price', 0)
+
+            # 블랙리스트 필터 (스테이블 코인 등)
+            if coin in COIN_BLACKLIST:
+                continue
 
             # 최소 가격 필터 (API 호출 전에 사전 필터링)
             if price and price < MIN_PRICE_KRW:
