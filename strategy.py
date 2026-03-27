@@ -266,9 +266,11 @@ class ClaudeStrategy:
             return result
         result['reasons'].append(f"RSI {rsi_cur:.1f}")
 
-        # 3. 가격 > BB 중간선 (보너스)
-        if price > bb_mid:
-            result['reasons'].append("BB 중간선 위")
+        # 3. 가격 > BB 중간선 (필수)
+        if price <= bb_mid:
+            result['fail_reasons'].append(f"가격({price:.0f}) <= BB중간({bb_mid:.0f})")
+            return result
+        result['reasons'].append("BB 중간선 위")
 
         # 4. 거래대금 급증 (보너스)
         if self.is_volume_surge(df):
