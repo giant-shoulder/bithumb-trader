@@ -70,7 +70,7 @@ class AutoTrader:
         logger.info("=" * 50)
         logger.info("빗섬 자동매매 시스템 시작 (Claude 전략 v2)")
         logger.info(f"설정: 하드손절 -1.2% | 트레일링 +1%/-0.5% | 익절 +4%")
-        logger.info(f"설정: 최소가격 {MIN_PRICE_KRW}원 | 거래시간 {TRADING_HOUR_START}~{TRADING_HOUR_END}시")
+        logger.info(f"설정: 최소가격 {MIN_PRICE_KRW}원 | 거래중단 {TRADING_BLOCK_START}~{TRADING_BLOCK_END}시")
         logger.info(f"설정: 최대 포지션 {MAX_CONCURRENT_POSITIONS}개 | 캔들 {BUY_CANDLE_INTERVAL}")
         logger.info("=" * 50)
         self._load_existing_positions()
@@ -144,7 +144,7 @@ class AutoTrader:
                     self._scan_for_entry(top_coins)
                 else:
                     logger.info(f"[거래시간 외] 현재 {now_kst.strftime('%H:%M')} KST "
-                                f"(허용: {TRADING_HOUR_START}:00~{TRADING_HOUR_END}:00) - 매수 탐색 스킵")
+                                f"(차단: {TRADING_BLOCK_START}:00~{TRADING_BLOCK_END}:00) - 매수 탐색 스킵")
 
                 # 5. 포지션 유무에 따라 대기 시간 결정
                 interval = POLLING_INTERVAL_ACTIVE if self.positions else POLLING_INTERVAL_IDLE
