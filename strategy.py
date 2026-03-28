@@ -14,6 +14,7 @@ from config import (
     TRAILING_ACTIVATE_PCT, TRAILING_DROP_PCT,
     HARD_TAKE_PROFIT_PCT,
     MOMENTUM_KILL_RANK,
+    MIN_PROFIT_FOR_SELL,
     RSI_PERIOD, RSI_OVERBOUGHT,
     BB_PERIOD, BB_STD,
 )
@@ -349,15 +350,15 @@ class ClaudeStrategy:
                                     f"(수익 {pct:+.2f}%, 고점={highest_price:,.0f})")
                 return result
 
-        # 모멘텀 소멸: 순위 40위 밖
+        # 모멘텀 소멸: 순위 40위 밖 (익절 쿨다운 적용 - 같은 코인 재매수 허용)
         if volume_rank > MOMENTUM_KILL_RANK:
             result['sell'] = True
-            result['is_stop_loss'] = True  # 모멘텀 소멸은 손절 쿨다운 적용
+            result['is_stop_loss'] = False
             result['reason'] = f"모멘텀 소멸: 거래대금 {volume_rank}위 (기준: {MOMENTUM_KILL_RANK}위)"
             return result
 
-        # df가 있으면 기술 지표 기반 매도 체크 (수익 구간에서만)
-        if df is not None and pct > 0:
+        # df가 있으면 기술 지표 기반 매도 체크 (최소 수익 MIN_PROFIT_FOR_SELL 이상일 때만)
+        if df is not None and pct >= MIN_PROFIT_FOR_SELL:
             if self.should_sell_rsi(df):
                 result['sell'] = True
                 result['reason'] = f"RSI 과매수 반전 (수익 {pct:+.2f}%)"

@@ -28,7 +28,7 @@ RSI_BUY_MIN = 40             # 매수 RSI 하한 (과매도 제외)
 RSI_BUY_MAX = 68             # 매수 RSI 상한 (과열 제외)
 BULLISH_CANDLE_MIN = 3.0     # 장대양봉 최소 크기 (시가 대비 %)
 PREV_HIGH_PERIOD = 120       # 전고점 기간 (캔들 수)
-MIN_PRICE_KRW = 5            # 최소 코인 가격 (원) - 1원짜리 극소가 코인 필터
+MIN_PRICE_KRW = 10           # 최소 코인 가격 (원) - 저가 코인 필터 (5원이하 틱단위 손절 불가)
 
 # 매수 실행
 MAX_POSITION_KRW = 500000    # 코인당 최대 투자금액 (원)
@@ -38,10 +38,11 @@ MAX_CONCURRENT_POSITIONS = 3  # 최대 동시 포지션 수
 
 # ===== 손절/익절 (고정값, 단순) =====
 HARD_STOP_PCT = 1.2           # 하드 손절 (%) - 매입가 대비 -1.2% 즉시 손절
-TRAILING_ACTIVATE_PCT = 1.0   # 트레일링 스탑 활성화 (%) - +1% 수익 시 활성화
-TRAILING_DROP_PCT = 0.5       # 트레일링 하락 폭 (%) - 고점 대비 -0.5% 시 매도
+TRAILING_ACTIVATE_PCT = 0.5   # 트레일링 스탑 활성화 (%) - +0.5% 수익 시 활성화
+TRAILING_DROP_PCT = 0.3       # 트레일링 하락 폭 (%) - 고점 대비 -0.3% 시 매도
 HARD_TAKE_PROFIT_PCT = 4.0    # 하드 익절선 (%) - +4% 이상 시 무조건 매도
 MOMENTUM_KILL_RANK = 40       # 모멘텀 소멸 기준 순위
+MIN_PROFIT_FOR_SELL = 0.4     # 지표 기반 매도 최소 수익률 (%) - RSI/MACD/BB 매도 조건
 
 # 최소 보유 시간 (하드손절 제외한 일반 매도에만 적용)
 MIN_HOLD_SECONDS = 180        # 매수 후 최소 보유 시간 (초)
