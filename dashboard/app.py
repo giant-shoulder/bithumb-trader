@@ -5,6 +5,7 @@ import subprocess
 import os
 import csv
 import glob
+import xml.etree.ElementTree as ET
 from datetime import datetime, date
 from functools import wraps
 from flask import Flask, render_template, Response, request, session, redirect, url_for, jsonify
@@ -181,6 +182,56 @@ def review_data(target_date):
         },
         'sources': sources,
     })
+
+
+@app.route('/api/review/<target_date>/export/xml')
+@login_required
+def export_xml(target_date):
+    base_dir = '/home/ubuntu/bithumb-trader'
+    ym = target_date[:7].replace('-', '')
+
+    trades = []
+    trade_file = f"{base_dir}/trade_history_{ym}.csv"
+    if os.path.exists(trade_file):
+        with open(trade_file, encoding='utf-8') as f:
+            reader = csv.DictReader(f, restkey=None)
+            for row in reader:
+                if row['시간'].startswith(target_date):
+                    row.pop(None, None)
+                    trades.append(row)
+
+    rejects = []
+    reject_file = f"{base_dir}/reject_history_{ym}.csv"
+    if os.path.exists(reject_file):
+        with open(reject_file, encoding='utf-8') as f:
+            reader = csv.DictReader(f, restkey=None)
+            for row in reader:
+                if row['시간'].startswith(target_date):
+                    row.pop(None, None)
+                    rejects.append(row)
+
+    root = ET.Element('매매회고', 날짜=target_date)
+
+    trades_el = ET.SubElement(root, '매매내역')
+    for t in trades:
+        trade_el = ET.SubElement(trades_el, '거래')
+        for k, v in t.items():
+            if not k.startswith('_'):
+                ET.SubElement(trade_el, k).text = str(v or '')
+
+    rejects_el = ET.SubElement(root, '탈락내역')
+    for r in rejects:
+        reject_el = ET.SubElement(rejects_el, '탈락')
+        for k, v in r.items():
+            if not k.startswith('_'):
+                ET.SubElement(reject_el, k).text = str(v or '')
+
+    xml_bytes = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+    return Response(
+        xml_bytes,
+        mimetype='application/xml',
+        headers={'Content-Disposition': f'attachment; filename="trades_{target_date}.xml"'}
+    )
 
 
 if __name__ == '__main__':

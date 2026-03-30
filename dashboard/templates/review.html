@@ -150,6 +150,7 @@
       <a href="/" class="nav-link">← 대시보드</a>
       <input type="date" id="datePicker" value="{{ target_date }}">
       <button class="btn btn-primary" onclick="loadData()">조회</button>
+      <button class="btn" onclick="exportXml()">XML 내보내기</button>
       <a href="/logout"><button class="btn">로그아웃</button></a>
     </div>
   </header>
@@ -320,6 +321,12 @@
         .catch(() => {
           document.getElementById('main').innerHTML = '<div class="empty-msg">데이터를 불러오지 못했습니다.</div>';
         });
+    }
+
+    function exportXml() {
+      const d = document.getElementById('datePicker').value;
+      if (!d) return;
+      window.location.href = `/api/review/${d}/export/xml`;
     }
 
     loadData();
