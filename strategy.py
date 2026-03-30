@@ -321,13 +321,36 @@ class ClaudeStrategy:
 
         return result
 
+    def check_trailing_stop(self, coin: str, buy_price: float, current_price: float,
+                            highest_price: float) -> dict:
+        """티어드 트레일링 스탑 - MIN_HOLD_SECONDS 무관, 항상 즉시 체크"""
+        result = {'coin': coin, 'sell': False, 'reason': '', 'is_stop_loss': False}
+
+        if highest_price is None or highest_price <= buy_price:
+            return result
+
+        pct = (current_price - buy_price) / buy_price * 100
+        if pct < TRAILING_ACTIVATE_PCT:
+            return result
+
+        drop_from_high = (highest_price - current_price) / highest_price * 100
+        high_pct = (highest_price - buy_price) / buy_price * 100
+        trail_pct = TRAILING_TIERS[-1][1]
+        for threshold, width in TRAILING_TIERS:
+            if high_pct >= threshold:
+                trail_pct = width
+                break
+
+        if drop_from_high >= trail_pct:
+            result['sell'] = True
+            result['reason'] = (f"트레일링 스탑: 고점 대비 -{drop_from_high:.2f}% "
+                                f"(수익 {pct:+.2f}%, 허용폭 -{trail_pct}%)")
+        return result
+
     def check_sell_signal(self, coin: str, buy_price: float, current_price: float,
                           volume_rank: int, highest_price: float = None,
                           df: pd.DataFrame = None) -> dict:
-        """일반 매도 신호 - MIN_HOLD_SECONDS 경과 후에만 호출
-
-        트레일링 스탑, 모멘텀 소멸, RSI/BB/MACD (df 있을 때만)
-        """
+        """일반 매도 신호 - MIN_HOLD_SECONDS 경과 후에만 호출 (RSI/MACD/BB/모멘텀)"""
         result = {
             'coin': coin,
             'sell': False,
@@ -335,27 +358,7 @@ class ClaudeStrategy:
             'is_stop_loss': False,
         }
 
-        if highest_price is None:
-            highest_price = current_price
-
         pct = (current_price - buy_price) / buy_price * 100
-
-        # 티어드 트레일링 스탑: 수익 구간에 따라 허용 하락폭 다르게 적용
-        if pct >= TRAILING_ACTIVATE_PCT and highest_price > buy_price:
-            drop_from_high = (highest_price - current_price) / highest_price * 100
-            # 고점 기준 수익률로 트레일링 폭 결정
-            high_pct = (highest_price - buy_price) / buy_price * 100
-            trail_pct = TRAILING_TIERS[-1][1]  # 기본값 (최소 티어)
-            for threshold, width in TRAILING_TIERS:
-                if high_pct >= threshold:
-                    trail_pct = width
-                    break
-            if drop_from_high >= trail_pct:
-                result['sell'] = True
-                result['is_stop_loss'] = False
-                result['reason'] = (f"트레일링 스탑: 고점 대비 -{drop_from_high:.2f}% "
-                                    f"(수익 {pct:+.2f}%, 허용폭 -{trail_pct}%)")
-                return result
 
         # 모멘텀 소멸: 순위 40위 밖 (익절 쿨다운 적용 - 같은 코인 재매수 허용)
         if volume_rank > MOMENTUM_KILL_RANK:

@@ -232,7 +232,7 @@ class AutoTrader:
             pnl_pct = (current_price - pos.buy_price) / pos.buy_price * 100
             rank = volume_rank_map.get(coin, 999)
 
-            # === 1단계: 하드 손절/익절 (항상, 즉시, MIN_HOLD_SECONDS 무관) ===
+            # === 1단계: 하드 손절/익절 + 트레일링 (항상, 즉시, MIN_HOLD_SECONDS 무관) ===
             hard_signal = self.strategy.check_hard_stop(coin, pos.buy_price, current_price)
             if hard_signal['sell']:
                 logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
@@ -240,7 +240,14 @@ class AutoTrader:
                 coins_to_sell.append((coin, pos, current_price, hard_signal))
                 continue
 
-            # === 2단계: 최소 보유시간 체크 (일반 매도에만 적용) ===
+            trail_signal = self.strategy.check_trailing_stop(coin, pos.buy_price, current_price, pos.highest_price)
+            if trail_signal['sell']:
+                logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
+                            f"손익={pnl_pct:+.1f}% | [즉시 매도] {trail_signal['reason']}")
+                coins_to_sell.append((coin, pos, current_price, trail_signal))
+                continue
+
+            # === 2단계: 최소 보유시간 체크 (RSI/MACD/BB/모멘텀 매도에만 적용) ===
             hold_secs = (datetime.now() - datetime.strptime(pos.entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
             if hold_secs < MIN_HOLD_SECONDS:
                 logger.debug(f"[{coin}] 최소 보유시간 미충족: {hold_secs:.0f}s / {MIN_HOLD_SECONDS}s "
