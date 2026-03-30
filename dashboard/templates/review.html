@@ -151,6 +151,7 @@
       <input type="date" id="datePicker" value="{{ target_date }}">
       <button class="btn btn-primary" onclick="loadData()">조회</button>
       <button class="btn" onclick="exportXml()">XML 내보내기</button>
+      <button class="btn" onclick="exportExcel()">엑셀 내보내기</button>
       <a href="/logout"><button class="btn">로그아웃</button></a>
     </div>
   </header>
@@ -327,6 +328,11 @@
       const d = document.getElementById('datePicker').value;
       if (!d) return;
       window.location.href = `/api/review/${d}/export/xml`;
+    }
+    function exportExcel() {
+      const d = document.getElementById('datePicker').value;
+      if (!d) return;
+      window.location.href = `/api/review/${d}/export/excel`;
     }
 
     loadData();

@@ -5,7 +5,10 @@ import subprocess
 import os
 import csv
 import glob
+import io
 import xml.etree.ElementTree as ET
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment
 from datetime import datetime, date
 from functools import wraps
 from flask import Flask, render_template, Response, request, session, redirect, url_for, jsonify
@@ -231,6 +234,97 @@ def export_xml(target_date):
         xml_bytes,
         mimetype='application/xml',
         headers={'Content-Disposition': f'attachment; filename="trades_{target_date}.xml"'}
+    )
+
+
+@app.route('/api/review/<target_date>/export/excel')
+@login_required
+def export_excel(target_date):
+    base_dir = '/home/ubuntu/bithumb-trader'
+    ym = target_date[:7].replace('-', '')
+
+    trades = []
+    trade_file = f"{base_dir}/trade_history_{ym}.csv"
+    if os.path.exists(trade_file):
+        with open(trade_file, encoding='utf-8') as f:
+            reader = csv.DictReader(f, restkey=None)
+            for row in reader:
+                if row['시간'].startswith(target_date):
+                    row.pop(None, None)
+                    trades.append(row)
+
+    rejects = []
+    reject_file = f"{base_dir}/reject_history_{ym}.csv"
+    if os.path.exists(reject_file):
+        with open(reject_file, encoding='utf-8') as f:
+            reader = csv.DictReader(f, restkey=None)
+            for row in reader:
+                if row['시간'].startswith(target_date):
+                    row.pop(None, None)
+                    rejects.append(row)
+
+    wb = openpyxl.Workbook()
+
+    # ── 매매내역 시트 ──
+    ws = wb.active
+    ws.title = '매매내역'
+
+    header_fill = PatternFill('solid', fgColor='1F2937')
+    header_font = Font(color='79C0FF', bold=True)
+    buy_fill   = PatternFill('solid', fgColor='1A4731')
+    sell_fill  = PatternFill('solid', fgColor='3D1A1A')
+
+    if trades:
+        cols = [k for k in trades[0].keys() if not k.startswith('_')]
+        for ci, col in enumerate(cols, 1):
+            cell = ws.cell(row=1, column=ci, value=col)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center')
+
+        for ri, t in enumerate(trades, 2):
+            is_buy = t.get('유형') == '매수'
+            row_fill = buy_fill if is_buy else sell_fill
+            for ci, col in enumerate(cols, 1):
+                val = t.get(col, '')
+                try:
+                    val = float(val)
+                except (ValueError, TypeError):
+                    pass
+                cell = ws.cell(row=ri, column=ci, value=val)
+                cell.fill = row_fill
+
+        for col in ws.columns:
+            ws.column_dimensions[col[0].column_letter].width = 16
+
+    # ── 탈락내역 시트 ──
+    ws2 = wb.create_sheet('탈락내역')
+    if rejects:
+        cols2 = [k for k in rejects[0].keys() if not k.startswith('_')]
+        for ci, col in enumerate(cols2, 1):
+            cell = ws2.cell(row=1, column=ci, value=col)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center')
+        for ri, r in enumerate(rejects, 2):
+            for ci, col in enumerate(cols2, 1):
+                val = r.get(col, '')
+                try:
+                    val = float(val)
+                except (ValueError, TypeError):
+                    pass
+                ws2.cell(row=ri, column=ci, value=val)
+        for col in ws2.columns:
+            ws2.column_dimensions[col[0].column_letter].width = 16
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return Response(
+        buf.getvalue(),
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': f'attachment; filename="trades_{target_date}.xlsx"'}
     )
 
 
