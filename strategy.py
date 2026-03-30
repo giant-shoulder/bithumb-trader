@@ -11,7 +11,7 @@ from config import (
     BULLISH_CANDLE_MIN, PREV_HIGH_PERIOD,
     MIN_PRICE_KRW,
     HARD_STOP_PCT,
-    TRAILING_ACTIVATE_PCT, TRAILING_DROP_PCT,
+    TRAILING_ACTIVATE_PCT, TRAILING_TIERS,
     HARD_TAKE_PROFIT_PCT,
     MOMENTUM_KILL_RANK,
     MIN_PROFIT_FOR_SELL,
@@ -340,14 +340,21 @@ class ClaudeStrategy:
 
         pct = (current_price - buy_price) / buy_price * 100
 
-        # 트레일링 스탑: +1% 수익 달성 후, 고점 대비 -0.5% 하락 시 매도
+        # 티어드 트레일링 스탑: 수익 구간에 따라 허용 하락폭 다르게 적용
         if pct >= TRAILING_ACTIVATE_PCT and highest_price > buy_price:
             drop_from_high = (highest_price - current_price) / highest_price * 100
-            if drop_from_high >= TRAILING_DROP_PCT:
+            # 고점 기준 수익률로 트레일링 폭 결정
+            high_pct = (highest_price - buy_price) / buy_price * 100
+            trail_pct = TRAILING_TIERS[-1][1]  # 기본값 (최소 티어)
+            for threshold, width in TRAILING_TIERS:
+                if high_pct >= threshold:
+                    trail_pct = width
+                    break
+            if drop_from_high >= trail_pct:
                 result['sell'] = True
                 result['is_stop_loss'] = False
                 result['reason'] = (f"트레일링 스탑: 고점 대비 -{drop_from_high:.2f}% "
-                                    f"(수익 {pct:+.2f}%, 고점={highest_price:,.0f})")
+                                    f"(수익 {pct:+.2f}%, 허용폭 -{trail_pct}%)")
                 return result
 
         # 모멘텀 소멸: 순위 40위 밖 (익절 쿨다운 적용 - 같은 코인 재매수 허용)
