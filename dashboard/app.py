@@ -123,10 +123,18 @@ def review_data(target_date):
     wins = [t for t in sells if float(t['손익률']) > 0]
     losses = [t for t in sells if float(t['손익률']) <= 0]
     total_pnl = sum(float(t['손익률']) for t in sells)
-    pnl_krw = sum(
-        float(t['금액']) * float(t['손익률']) / 100
-        for t in sells
-    )
+
+    # 실제 손익(원) 계산: 매도금액이 아닌 매수금액 기준으로 계산
+    # 매수금액 = 매도금액 / (1 + 손익률/100)
+    def calc_pnl_krw(t):
+        pnl_pct = float(t['손익률'])
+        sell_amt = float(t['금액'])
+        buy_amt = sell_amt / (1 + pnl_pct / 100)
+        return buy_amt * pnl_pct / 100
+
+    pnl_krw = sum(calc_pnl_krw(t) for t in sells)
+    total_invested = sum(float(t['금액']) / (1 + float(t['손익률']) / 100) for t in sells)
+    portfolio_return_pct = pnl_krw / total_invested * 100 if total_invested else 0
 
     # 신호 출처별 통계
     sources = {}
@@ -149,8 +157,9 @@ def review_data(target_date):
             'win_count': len(wins),
             'loss_count': len(losses),
             'win_rate': len(wins) / len(sells) * 100 if sells else 0,
-            'total_pnl_pct': total_pnl,
+            'total_pnl_pct': portfolio_return_pct,
             'total_pnl_krw': pnl_krw,
+            'total_pnl_pct_sum': total_pnl,
             'avg_win': sum(float(t['손익률']) for t in wins) / len(wins) if wins else 0,
             'avg_loss': sum(float(t['손익률']) for t in losses) / len(losses) if losses else 0,
         },
