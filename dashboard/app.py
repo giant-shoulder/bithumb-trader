@@ -124,16 +124,32 @@ def review_data(target_date):
     losses = [t for t in sells if float(t['손익률']) <= 0]
     total_pnl = sum(float(t['손익률']) for t in sells)
 
-    # 실제 손익(원) 계산: 매도금액이 아닌 매수금액 기준으로 계산
-    # 매수금액 = 매도금액 / (1 + 손익률/100)
-    def calc_pnl_krw(t):
-        pnl_pct = float(t['손익률'])
-        sell_amt = float(t['금액'])
-        buy_amt = sell_amt / (1 + pnl_pct / 100)
-        return buy_amt * pnl_pct / 100
+    # 실제 손익(원) 계산: 매수-매도 매칭으로 실제 투자금액 기준 계산
+    # 각 매도에 대해 직전 매수들을 찾아 실제 손익 = 매도금액 - 매수금액 합계
+    buy_queue = {}  # coin → list of buy amounts (chronological)
+    for t in trades:
+        coin = t['코인']
+        if t['유형'] == '매수':
+            buy_queue.setdefault(coin, []).append(float(t['금액']))
+        elif t['유형'] == '매도':
+            invested = sum(buy_queue.pop(coin, []))
+            t['_buy_amt'] = invested
 
-    pnl_krw = sum(calc_pnl_krw(t) for t in sells)
-    total_invested = sum(float(t['금액']) / (1 + float(t['손익률']) / 100) for t in sells)
+    pnl_krw = 0.0
+    total_invested = 0.0
+    for t in sells:
+        sell_amt = float(t['금액'])
+        buy_amt = t.get('_buy_amt', 0.0)
+        if buy_amt > 0:
+            pnl_krw += sell_amt - buy_amt
+            total_invested += buy_amt
+        else:
+            # 매수 기록 없으면 손익률로 역산
+            pnl_pct = float(t['손익률'])
+            derived_buy = sell_amt / (1 + pnl_pct / 100)
+            pnl_krw += derived_buy * pnl_pct / 100
+            total_invested += derived_buy
+
     portfolio_return_pct = pnl_krw / total_invested * 100 if total_invested else 0
 
     # 신호 출처별 통계
