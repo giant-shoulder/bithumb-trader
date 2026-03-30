@@ -22,6 +22,7 @@ from config import (
     TRADING_BLOCK_START, TRADING_BLOCK_END,
     BUY_CANDLE_INTERVAL, BUY_CANDLE_COUNT,
     COIN_BLACKLIST,
+    DAILY_COIN_STOP_LIMIT,
 )
 
 KST = timezone(timedelta(hours=9))
@@ -62,6 +63,7 @@ class AutoTrader:
         self.strategy = ClaudeStrategy()
         self.positions: dict[str, Position] = {}
         self.sell_cooldown: dict[str, float] = {}  # coin -> cooldown_end_timestamp
+        self.daily_coin_stops: dict[str, int] = {}  # coin -> 당일 손절 횟수
         self.is_running = False
         self.dry_run = dry_run
         self.daily_pnl_krw = 0.0
@@ -180,6 +182,7 @@ class AutoTrader:
         today = datetime.now().date()
         if today != self.daily_reset_date:
             self.daily_pnl_krw = 0.0
+            self.daily_coin_stops = {}
             self.daily_reset_date = today
             logger.info("일일 손익 초기화")
 
@@ -312,6 +315,13 @@ class AutoTrader:
             self.sell_cooldown[coin] = time.time() + cooldown
             cooldown_label = "1시간" if is_stop_loss else "10분"
 
+            # 손절 횟수 누적 및 당일 블랙리스트 체크
+            if is_stop_loss:
+                self.daily_coin_stops[coin] = self.daily_coin_stops.get(coin, 0) + 1
+                stops_today = self.daily_coin_stops[coin]
+                if stops_today >= DAILY_COIN_STOP_LIMIT:
+                    logger.warning(f"[당일 블랙리스트] {coin} | 오늘 손절 {stops_today}회 → 오늘 재매수 금지")
+
             logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}% ({pnl_krw:+,.0f}원) "
                         f"| 오늘 누적: {self.daily_pnl_krw:+,.0f}원 "
                         f"| 쿨다운: {cooldown_label}")
@@ -381,14 +391,18 @@ class AutoTrader:
             return
 
         now = time.time()
+        daily_blocked = [coin for coin, cnt in self.daily_coin_stops.items() if cnt >= DAILY_COIN_STOP_LIMIT]
         candidates = [
             c for c in top_coins
             if c['coin'] not in self.positions
             and now > self.sell_cooldown.get(c['coin'], 0)
+            and c['coin'] not in daily_blocked
         ]
         cooldown_skipped = [c['coin'] for c in top_coins if c['coin'] not in self.positions and now <= self.sell_cooldown.get(c['coin'], 0)]
         if cooldown_skipped:
             logger.info(f"[쿨다운 중] {', '.join(cooldown_skipped)}")
+        if daily_blocked:
+            logger.info(f"[당일 블랙리스트] {', '.join(daily_blocked)}")
 
         buy_candidates = []
         for coin_data in candidates:
