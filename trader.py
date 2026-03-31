@@ -301,12 +301,29 @@ class AutoTrader:
             return
         result = self.api.sell_market(coin, actual_qty)
         if result:
-            pnl_pct = (price - pos.buy_price) / pos.buy_price * 100
+            # 실제 체결 금액 조회 (시장가는 체결가가 추정가와 다를 수 있음)
+            order_id = result.get('order_id') or result.get('uuid')
+            actual_amount = None
+            actual_exec_price = price
+            if order_id:
+                time.sleep(0.5)  # 체결 확정 대기
+                order_detail = self.api.get_order(order_id)
+                if order_detail:
+                    executed_funds = float(order_detail.get('executed_funds', 0) or 0)
+                    executed_vol = float(order_detail.get('executed_volume', 0) or 0)
+                    if executed_funds > 0:
+                        actual_amount = executed_funds
+                        if executed_vol > 0:
+                            actual_exec_price = executed_funds / executed_vol
+                        logger.info(f"[{coin}] 실제 체결: {executed_funds:,.0f}원 (추정: {actual_qty * price:,.0f}원)")
+
+            sell_amount = actual_amount if actual_amount else actual_qty * price
+            pnl_krw = sell_amount - pos.total_amount
+            pnl_pct = pnl_krw / pos.total_amount * 100
             trade_logger.log_trade(
-                coin, "매도", price, actual_qty,
-                actual_qty * price, pnl_pct, reason
+                coin, "매도", actual_exec_price, actual_qty,
+                sell_amount, pnl_pct, reason
             )
-            pnl_krw = (price - pos.buy_price) / pos.buy_price * pos.total_amount
             self.daily_pnl_krw += pnl_krw
             del self.positions[coin]
 

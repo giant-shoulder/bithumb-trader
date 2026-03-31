@@ -280,6 +280,11 @@ class BithumbAPI:
             return None
         return result
 
+    def get_order(self, order_id: str) -> dict | None:
+        """주문 체결 상세 조회 (실제 체결가/금액 확인용)"""
+        params = {'uuid': order_id}
+        return self._private_get('/v1/order', params)
+
     def buy_limit(self, coin: str, price: float, quantity: float) -> dict | None:
         """지정가 매수"""
         body = {
