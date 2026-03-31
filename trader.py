@@ -23,6 +23,7 @@ from config import (
     BUY_CANDLE_INTERVAL, BUY_CANDLE_COUNT,
     COIN_BLACKLIST,
     DAILY_COIN_STOP_LIMIT,
+    HARD_STOP_MIN_HOLD_SECONDS,
 )
 
 KST = timezone(timedelta(hours=9))
@@ -235,13 +236,18 @@ class AutoTrader:
             pnl_pct = (current_price - pos.buy_price) / pos.buy_price * 100
             rank = volume_rank_map.get(coin, 999)
 
-            # === 1단계: 하드 손절/익절 + 트레일링 (항상, 즉시, MIN_HOLD_SECONDS 무관) ===
+            # === 1단계: 하드 손절/익절 + 트레일링 ===
+            hold_secs_hard = (datetime.now() - datetime.strptime(pos.entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
             hard_signal = self.strategy.check_hard_stop(coin, pos.buy_price, current_price)
             if hard_signal['sell']:
-                logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
-                            f"손익={pnl_pct:+.1f}% | [즉시 매도] {hard_signal['reason']}")
-                coins_to_sell.append((coin, pos, current_price, hard_signal))
-                continue
+                if hold_secs_hard < HARD_STOP_MIN_HOLD_SECONDS:
+                    logger.debug(f"[{coin}] 하드 손절 대기: 보유 {hold_secs_hard:.0f}s < {HARD_STOP_MIN_HOLD_SECONDS}s "
+                                 f"(손익={pnl_pct:+.1f}%)")
+                else:
+                    logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
+                                f"손익={pnl_pct:+.1f}% | [즉시 매도] {hard_signal['reason']}")
+                    coins_to_sell.append((coin, pos, current_price, hard_signal))
+                    continue
 
             trail_signal = self.strategy.check_trailing_stop(coin, pos.buy_price, current_price, pos.highest_price)
             if trail_signal['sell']:
