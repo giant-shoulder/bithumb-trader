@@ -29,7 +29,7 @@ RSI_BUY_MIN = 40             # 매수 RSI 하한 (과매도 제외)
 RSI_BUY_MAX = 68             # 매수 RSI 상한 (과열 제외)
 BULLISH_CANDLE_MIN = 3.0     # 장대양봉 최소 크기 (시가 대비 %)
 PREV_HIGH_PERIOD = 120       # 전고점 기간 (캔들 수)
-MIN_PRICE_KRW = 10           # 최소 코인 가격 (원) - 저가 코인 필터 (5원이하 틱단위 손절 불가)
+MIN_PRICE_KRW = 1            # 최소 코인 가격 (원) - 빗썸 저가 코인도 0.001원 틱단위 사용
 
 # 매수 실행
 MAX_POSITION_KRW = 500000    # 코인당 최대 투자금액 (원)
