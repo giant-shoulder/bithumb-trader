@@ -39,23 +39,25 @@ def get_logger(name: str = "bithumb_trader") -> logging.Logger:
 
 class TradeLogger:
     """거래 기록 전용 로거"""
-    def __init__(self):
-        self.trade_file = f"trade_history_{datetime.now(KST).strftime('%Y%m')}.csv"
-        self.reject_file = f"reject_history_{datetime.now(KST).strftime('%Y%m')}.csv"
 
-        if not os.path.exists(self.trade_file):
-            with open(self.trade_file, 'w', encoding='utf-8') as f:
-                f.write("시간,코인,유형,가격,수량,금액,손익률,사유,신호출처\n")
+    def _trade_file(self) -> str:
+        return f"trade_history_{datetime.now(KST).strftime('%Y%m')}.csv"
 
-        if not os.path.exists(self.reject_file):
-            with open(self.reject_file, 'w', encoding='utf-8') as f:
-                f.write("시간,코인,탈락사유,탈락시가격\n")
+    def _reject_file(self) -> str:
+        return f"reject_history_{datetime.now(KST).strftime('%Y%m')}.csv"
+
+    def _ensure_header(self, path: str, header: str):
+        if not os.path.exists(path):
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(header)
 
     def log_trade(self, coin: str, trade_type: str, price: float,
                   quantity: float, amount: float, pnl_pct: float = 0.0,
                   reason: str = "", source: str = "momentum"):
         now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-        with open(self.trade_file, 'a', encoding='utf-8') as f:
+        path = self._trade_file()
+        self._ensure_header(path, "시간,코인,유형,가격,수량,금액,손익률,사유,신호출처\n")
+        with open(path, 'a', encoding='utf-8') as f:
             f.write(f"{now},{coin},{trade_type},{price:.2f},{quantity:.6f},"
                     f"{amount:.0f},{pnl_pct:.2f},{reason},{source}\n")
         get_logger().info(
@@ -65,5 +67,7 @@ class TradeLogger:
 
     def log_reject(self, coin: str, reason: str, price: float):
         now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-        with open(self.reject_file, 'a', encoding='utf-8') as f:
+        path = self._reject_file()
+        self._ensure_header(path, "시간,코인,탈락사유,탈락시가격\n")
+        with open(path, 'a', encoding='utf-8') as f:
             f.write(f"{now},{coin},{reason},{price:.2f}\n")
