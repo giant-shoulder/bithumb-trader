@@ -29,10 +29,10 @@ MA_LONG = 120     # 장기
 
 # 매수 조건
 RSI_BUY_MIN = 40             # 매수 RSI 하한 (과매도 제외)
-RSI_BUY_MAX = 60             # 매수 RSI 상한 (68→60, 과열 진입 방지)
+RSI_BUY_MAX = 65             # 매수 RSI 상한 (68→60→65, 매매기회 확대)
 BULLISH_CANDLE_MIN = 3.0     # 장대양봉 최소 크기 (시가 대비 %)
 PREV_HIGH_PERIOD = 120       # 전고점 기간 (캔들 수)
-MIN_PRICE_KRW = 50           # 최소 코인 가격 (원) - 초저가 코인 스프레드 손실 방지 (2026-03-31)
+MIN_PRICE_KRW = 10           # 최소 코인 가격 (원) - 초저가 코인 스프레드 손실 방지 (50→10, 2026-04-02)
 
 # 매수 실행
 MAX_POSITION_KRW = 750000    # 코인당 최대 투자금액 (원)
@@ -42,7 +42,7 @@ MAX_CONCURRENT_POSITIONS = 3  # 최대 동시 포지션 수
 
 # ===== 손절/익절 (고정값, 단순) =====
 HARD_STOP_PCT = 1.2           # 하드 손절 (%) - 슬리피지 감안 1.5→1.2%
-HARD_STOP_MIN_HOLD_SECONDS = 15  # 하드 손절 최소 보유시간 (초) - 45→15초
+HARD_STOP_MIN_HOLD_SECONDS = 5   # 하드 손절 최소 보유시간 (초) - 45→15→5초
 TRAILING_ACTIVATE_PCT = 0.7   # 트레일링 스탑 활성화 수익 기준 (1.0→0.7%)
 
 # 티어드 트레일링 스탑: 수익이 클수록 더 넓게 추격

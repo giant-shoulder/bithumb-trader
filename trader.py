@@ -363,6 +363,14 @@ class AutoTrader:
             alert_type = signal['type']
             logger.info(f"[텔레그램 신호 처리] {coin} | {alert_type}")
 
+            # 블랙리스트 체크 (글로벌 + 당일)
+            if coin in COIN_BLACKLIST:
+                logger.info(f"[텔레그램] {coin} 블랙리스트, 스킵")
+                continue
+            if self.daily_coin_stops.get(coin, 0) >= DAILY_COIN_STOP_LIMIT:
+                logger.info(f"[텔레그램] {coin} 당일 손절 {self.daily_coin_stops[coin]}회 → 오늘 재매수 금지, 스킵")
+                continue
+
             # 쿨다운/포지션 체크
             if coin in self.positions:
                 logger.info(f"[텔레그램] {coin} 이미 보유 중, 스킵")
