@@ -43,7 +43,7 @@ MAX_CONCURRENT_POSITIONS = 3  # 최대 동시 포지션 수
 # ===== 손절/익절 (고정값, 단순) =====
 HARD_STOP_PCT = 1.2           # 하드 손절 (%) - 슬리피지 감안 1.5→1.2%
 HARD_STOP_MIN_HOLD_SECONDS = 5   # 하드 손절 최소 보유시간 (초) - 45→15→5초
-TRAILING_ACTIVATE_PCT = 0.7   # 트레일링 스탑 활성화 수익 기준 (1.0→0.7%)
+TRAILING_ACTIVATE_PCT = 0.5   # 트레일링 스탑 활성화 수익 기준 (1.0→0.7→0.5%)
 
 # 티어드 트레일링 스탑: 수익이 클수록 더 넓게 추격
 # (수익 하한, 트레일링 폭) - 위에서부터 매칭
@@ -53,7 +53,7 @@ TRAILING_TIERS = [
     (0.5, 0.5),   # +0.5% 이상 수익 → 고점 대비 -0.5% 허용
 ]
 HARD_TAKE_PROFIT_PCT = 10.0   # 안전망 익절 (15→10, 익절 기회 앞당기기)
-MOMENTUM_KILL_RANK = 40       # 모멘텀 소멸 기준 순위
+MOMENTUM_KILL_RANK = 50       # 모멘텀 소멸 기준 순위 (40→50, TOP_N=50에 맞게)
 MIN_PROFIT_FOR_SELL = 0.4     # 지표 기반 매도 최소 수익률 (%) - RSI/MACD/BB 매도 조건
 
 # 최소 보유 시간 (하드손절 제외한 일반 매도에만 적용)

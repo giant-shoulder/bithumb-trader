@@ -190,8 +190,8 @@ class ClaudeStrategy:
             trade_ratio = 0
 
         # 판단: 둘 다 충족해야 매수 (AND), 기준은 완화
-        bid_ok = bid_ratio >= 1.1      # 매수잔량이 매도잔량의 1.1배 이상 (1.05→1.3→1.1)
-        trade_ok = trade_ratio >= 0.58  # 최근 체결 58% 이상이 매수 (0.52→0.58)
+        bid_ok = bid_ratio >= 1.2      # 매수잔량이 매도잔량의 1.2배 이상 (1.05→1.3→1.1→1.2)
+        trade_ok = trade_ratio >= 0.58  # 최근 체결 58% 이상이 매수
 
         if bid_ok and trade_ok:
             result['strong'] = True
@@ -199,7 +199,7 @@ class ClaudeStrategy:
         else:
             reasons = []
             if not bid_ok:
-                reasons.append(f"호가비율 약함({bid_ratio:.2f}<1.1)")
+                reasons.append(f"호가비율 약함({bid_ratio:.2f}<1.2)")
             if not trade_ok:
                 reasons.append(f"체결비율 약함({trade_ratio:.0%}<58%)")
             result['reason'] = ', '.join(reasons)
@@ -210,18 +210,20 @@ class ClaudeStrategy:
 
     def check_buy_signal(self, coin: str, df: pd.DataFrame, momentum_score: float,
                          current_price: float = None) -> dict:
-        """매수 신호 종합 판단 (동적 스캔 기반)
+        """매수 신호 종합 판단 - "지금 오르는 중" 특화
 
-        필수 조건:
-          0. 최소 가격 500원 이상 (저가 코인 필터)
+        필수 조건 (모두 충족):
+          0. 최소 가격 필터
           1. MA5 > MA20 (단기 상승 추세)
-          2. RSI 40~65 (모멘텀 있되 과열 아님)
-          3. 가격 > BB 중간선 (상승 편향)
+          2. RSI 40~65 AND RSI 상승 중 (rsi_cur > rsi_prev)
+          3. 가격 > BB 중간선
+          4. 거래량 급증 (현재 캔들 >= 최근 10캔들 평균 1.5배) ← 보너스→필수
+          5. MACD > signal (상승 모멘텀 진행 중)
+          6. 현재 캔들 양봉 (close > open)
 
         가산 조건 (보너스):
-          4. 거래대금 급증
-          5. 전고점 돌파
-          6. 정배열 (MA5 > MA20 > MA60)
+          7. 전고점 돌파
+          8. 정배열 (MA5 > MA20 > MA60)
         """
         result = {
             'coin': coin,
@@ -245,8 +247,9 @@ class ClaudeStrategy:
 
         ma5 = self.calc_ma(df, MA_SHORT).iloc[-1]
         ma20 = self.calc_ma(df, MA_MID1).iloc[-1]
-        rsi_cur, _ = self.calc_rsi(df)
+        rsi_cur, rsi_prev = self.calc_rsi(df)
         _, bb_mid, _ = self.calc_bollinger_bands(df)
+        macd_cur, signal_cur, _, _ = self.calc_macd(df)
 
         # RSI NaN 체크 (스테이블 코인 등 변동 없는 경우)
         if pd.isna(rsi_cur):
@@ -261,11 +264,14 @@ class ClaudeStrategy:
             return result
         result['reasons'].append("MA5 > MA20")
 
-        # 2. RSI 매수 구간 (필수)
+        # 2. RSI 매수 구간 AND 상승 중 (필수)
         if not (RSI_BUY_MIN <= rsi_cur <= RSI_BUY_MAX):
             result['fail_reasons'].append(f"RSI {rsi_cur:.1f} (기준: {RSI_BUY_MIN}~{RSI_BUY_MAX})")
             return result
-        result['reasons'].append(f"RSI {rsi_cur:.1f}")
+        if pd.notna(rsi_prev) and rsi_cur <= rsi_prev:
+            result['fail_reasons'].append(f"RSI 하락 중 ({rsi_cur:.1f} <= {rsi_prev:.1f})")
+            return result
+        result['reasons'].append(f"RSI {rsi_cur:.1f}↑")
 
         # 3. 가격 > BB 중간선 (필수)
         if price <= bb_mid:
@@ -273,15 +279,35 @@ class ClaudeStrategy:
             return result
         result['reasons'].append("BB 중간선 위")
 
-        # 4. 거래대금 급증 (보너스)
-        if self.is_volume_surge(df):
-            result['reasons'].append("거래대금 급증")
+        # 4. 거래량 급증 (필수) - 현재 캔들 거래량이 최근 10캔들 평균의 1.5배 이상
+        if len(df) >= 12:
+            avg_vol = df['volume'].iloc[-11:-1].mean()
+            cur_vol = df['volume'].iloc[-1]
+            if avg_vol > 0 and cur_vol < avg_vol * 1.5:
+                result['fail_reasons'].append(f"거래량 부족 ({cur_vol/avg_vol:.1f}x < 1.5x)")
+                return result
+            vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1.0
+            result['reasons'].append(f"거래량 {vol_ratio:.1f}x")
 
-        # 5. 전고점 돌파 (보너스)
+        # 5. MACD > signal (상승 모멘텀 필수)
+        if pd.notna(macd_cur) and pd.notna(signal_cur) and macd_cur <= signal_cur:
+            result['fail_reasons'].append(f"MACD 하락 ({macd_cur:.4f} <= {signal_cur:.4f})")
+            return result
+        result['reasons'].append("MACD 상승")
+
+        # 6. 현재 캔들 양봉 (필수)
+        last_open = df['open'].iloc[-1]
+        last_close = df['close'].iloc[-1]
+        if last_close <= last_open:
+            result['fail_reasons'].append(f"음봉 (종가{last_close:.0f} <= 시가{last_open:.0f})")
+            return result
+        result['reasons'].append("양봉")
+
+        # 7. 전고점 돌파 (보너스)
         if self.is_breaking_high(df):
             result['reasons'].append("전고점 돌파")
 
-        # 6. 정배열 (보너스)
+        # 8. 정배열 (보너스)
         if self.is_bullish_alignment(df):
             result['reasons'].append("정배열")
 
