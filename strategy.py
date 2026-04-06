@@ -279,12 +279,12 @@ class ClaudeStrategy:
             return result
         result['reasons'].append("BB 중간선 위")
 
-        # 4. 거래량 급증 (필수) - 현재 캔들 거래량이 최근 10캔들 평균의 1.5배 이상
+        # 4. 거래량 급증 (필수) - 현재 캔들 거래량이 최근 10캔들 평균의 2.0배 이상
         if len(df) >= 12:
             avg_vol = df['volume'].iloc[-11:-1].mean()
             cur_vol = df['volume'].iloc[-1]
-            if avg_vol > 0 and cur_vol < avg_vol * 1.5:
-                result['fail_reasons'].append(f"거래량 부족 ({cur_vol/avg_vol:.1f}x < 1.5x)")
+            if avg_vol > 0 and cur_vol < avg_vol * 2.0:
+                result['fail_reasons'].append(f"거래량 부족 ({cur_vol/avg_vol:.1f}x < 2.0x)")
                 return result
             vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1.0
             result['reasons'].append(f"거래량 {vol_ratio:.1f}x")
