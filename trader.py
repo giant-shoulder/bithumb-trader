@@ -4,11 +4,13 @@ Claude 전략 기반 빗섬 자동매매
 """
 import time
 import queue
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from bithumb_api import BithumbAPI
 from strategy import ClaudeStrategy
 from logger import get_logger, TradeLogger
+from ws_price_monitor import WSPriceMonitor
 from config import (
     MAX_POSITION_KRW, BUY_UNIT_KRW, BUY_SPLIT,
     POLLING_INTERVAL_IDLE, POLLING_INTERVAL_ACTIVE,
@@ -70,6 +72,11 @@ class AutoTrader:
         self.daily_pnl_krw = 0.0
         self.daily_reset_date = datetime.now().date()
         self.telegram_queue: queue.Queue = queue.Queue()
+
+        # WebSocket 실시간 가격 모니터 (하드손절/트레일링 슬리피지 최소화)
+        self._ws_sell_queue: queue.Queue = queue.Queue()
+        self._ws_monitor = WSPriceMonitor(on_price_update=self._on_ws_price)
+        self._ws_monitor.start()
         logger.info("=" * 50)
         logger.info("빗섬 자동매매 시스템 시작 (Claude 전략 v2)")
         logger.info(f"설정: 하드손절 -1.2% | 트레일링 +1%/-0.5% | 익절 +4%")
@@ -150,9 +157,14 @@ class AutoTrader:
                                 f"(차단: {TRADING_BLOCK_START}:00~{TRADING_BLOCK_END}:00) - 매수 탐색 스킵")
 
                 # 5. 포지션 유무에 따라 대기 시간 결정
+                # 1초 단위로 슬립하며 WebSocket 매도 큐를 즉시 처리
                 interval = POLLING_INTERVAL_ACTIVE if self.positions else POLLING_INTERVAL_IDLE
                 logger.info(f"다음 실행: {interval}초 후 ({'포지션 있음' if self.positions else '대기 중'})")
-                time.sleep(interval)
+                for _ in range(interval):
+                    if not self.is_running:
+                        break
+                    time.sleep(1)
+                    self._process_ws_sells()  # WebSocket 트리거 매도 즉시 처리
 
             except KeyboardInterrupt:
                 logger.info("\n사용자 중단 요청")
@@ -167,6 +179,7 @@ class AutoTrader:
 
     def _shutdown(self):
         """종료 처리"""
+        self._ws_monitor.stop()
         logger.info("시스템 종료 중...")
         if self.positions:
             logger.warning(f"미청산 포지션 {len(self.positions)}개:")
@@ -175,6 +188,54 @@ class AutoTrader:
                 if price:
                     pnl = (price - pos.buy_price) / pos.buy_price * 100
                     logger.warning(f"  {coin}: 매입가={pos.buy_price:,.0f} 현재={price:,.0f} ({pnl:+.1f}%)")
+
+    # ===== WebSocket 실시간 가격 모니터 =====
+
+    def _on_ws_price(self, coin: str, price: float):
+        """WebSocket 실시간 가격 콜백 - 하드손절/트레일링 즉시 감지"""
+        pos = self.positions.get(coin)
+        if not pos:
+            return
+
+        # 최고가 갱신 (트레일링 스탑용)
+        if price > pos.highest_price:
+            pos.highest_price = price
+
+        hold_secs = (datetime.now() - datetime.strptime(
+            pos.entry_time, "%Y-%m-%d %H:%M:%S"
+        )).total_seconds()
+
+        # 하드 손절 체크
+        if hold_secs >= HARD_STOP_MIN_HOLD_SECONDS:
+            hard = self.strategy.check_hard_stop(coin, pos.buy_price, price)
+            if hard['sell']:
+                # positions에서 즉시 제거 → 메인 루프 중복 매도 방지
+                removed = self.positions.pop(coin, None)
+                if removed:
+                    logger.info(f"[WS 손절 감지] {coin} | {hard['reason']}")
+                    self._ws_sell_queue.put((coin, removed, price, hard['reason'], True))
+                return
+
+        # 트레일링 스탑 체크
+        trail = self.strategy.check_trailing_stop(coin, pos.buy_price, price, pos.highest_price)
+        if trail['sell']:
+            removed = self.positions.pop(coin, None)
+            if removed:
+                logger.info(f"[WS 트레일링 감지] {coin} | {trail['reason']}")
+                self._ws_sell_queue.put((coin, removed, price, trail['reason'], False))
+
+    def _process_ws_sells(self):
+        """WebSocket 트리거 매도 큐 처리 (1초마다 메인 루프에서 호출)"""
+        while not self._ws_sell_queue.empty():
+            try:
+                coin, pos, price, reason, is_stop_loss = self._ws_sell_queue.get_nowait()
+                self._execute_sell(coin, pos, price, reason, is_stop_loss)
+            except queue.Empty:
+                break
+
+    def _update_ws_subscriptions(self):
+        """현재 포지션 기반으로 WebSocket 구독 코인 갱신"""
+        self._ws_monitor.update_coins(set(self.positions.keys()))
 
     # ===== 일일 손실 한도 =====
 
@@ -294,16 +355,17 @@ class AutoTrader:
         logger.info(f"[매도 실행] {coin} | 사유: {reason}")
         if self.dry_run:
             logger.info(f"[DRY] 매도 생략: {coin} {pos.quantity}")
-            del self.positions[coin]
-            # 쿨다운 적용 (드라이런에서도)
+            self.positions.pop(coin, None)
             cooldown = COOLDOWN_AFTER_STOP_LOSS if is_stop_loss else COOLDOWN_AFTER_TAKE_PROFIT
             self.sell_cooldown[coin] = time.time() + cooldown
+            self._update_ws_subscriptions()
             return
         # 실제 잔고 조회 (추적 수량과 오차 방지)
         actual_qty = self.api.get_coin_balance(coin)
         if actual_qty <= 0:
             logger.warning(f"[{coin}] 실제 잔고 없음, 포지션 제거")
-            del self.positions[coin]
+            self.positions.pop(coin, None)
+            self._update_ws_subscriptions()
             return
         result = self.api.sell_market(coin, actual_qty)
         if result:
@@ -331,12 +393,13 @@ class AutoTrader:
                 sell_amount, pnl_pct, reason
             )
             self.daily_pnl_krw += pnl_krw
-            del self.positions[coin]
+            self.positions.pop(coin, None)  # WebSocket이 이미 제거했을 수 있으므로 pop 사용
+            self._update_ws_subscriptions()
 
-            # 쿨다운 적용: 손절이면 1시간, 익절이면 10분
+            # 쿨다운 적용: 손절이면 1시간, 익절이면 4시간
             cooldown = COOLDOWN_AFTER_STOP_LOSS if is_stop_loss else COOLDOWN_AFTER_TAKE_PROFIT
             self.sell_cooldown[coin] = time.time() + cooldown
-            cooldown_label = "1시간" if is_stop_loss else "10분"
+            cooldown_label = "1시간" if is_stop_loss else "4시간"
 
             # 손절 횟수 누적 및 당일 블랙리스트 체크
             if is_stop_loss:
@@ -556,6 +619,7 @@ class AutoTrader:
                 )
             trade_logger.log_trade(coin, "매수", price, quantity, krw, reason="매수신호", source=source)
             logger.info(f"[매수 완료] {coin} | 가격={price:,.0f} 금액={krw:,.0f}원 [{source}]")
+            self._update_ws_subscriptions()  # 새 포지션 WebSocket 구독 추가
 
     # ===== 상태 조회 =====
 

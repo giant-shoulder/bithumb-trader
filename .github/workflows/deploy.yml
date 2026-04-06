@@ -17,6 +17,7 @@ jobs:
           script: |
             cd ~/bithumb-trader
             git pull
+            pip3 install -r requirements.txt -q
             sudo systemctl restart bithumb-trader
             sudo systemctl restart bithumb-dashboard
             echo "배포 완료: $(date)"
