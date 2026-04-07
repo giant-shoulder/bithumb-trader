@@ -73,9 +73,13 @@ class AutoTrader:
         self.daily_reset_date = datetime.now().date()
         self.telegram_queue: queue.Queue = queue.Queue()
 
-        # WebSocket 실시간 가격 모니터 (하드손절/트레일링 슬리피지 최소화)
-        self._ws_sell_queue: queue.Queue = queue.Queue()
-        self._ws_monitor = WSPriceMonitor(on_price_update=self._on_ws_price)
+        # WebSocket 실시간 가격 모니터
+        self._ws_sell_queue: queue.Queue = queue.Queue()   # 손절/트레일링 즉시 매도 큐
+        self._hot_buy_queue: queue.Queue = queue.Queue()   # 급등 감지 즉시 매수 분석 큐
+        self._ws_monitor = WSPriceMonitor(
+            on_stop_signal=self._on_ws_price,
+            on_surge_detected=self._on_ws_surge,
+        )
         self._ws_monitor.start()
         logger.info("=" * 50)
         logger.info("빗섬 자동매매 시스템 시작 (Claude 전략 v2)")
@@ -142,6 +146,11 @@ class AutoTrader:
 
                 self._log_market_overview(top_coins)
 
+                # 상위 코인 목록을 WebSocket 급등 감시 대상으로 등록
+                self._ws_monitor.update_watch_coins(
+                    {c['coin'] for c in top_coins if c['coin'] not in COIN_BLACKLIST}
+                )
+
                 # 2. 보유 포지션 관리 (매도 우선 - 항상 실행)
                 self._manage_positions(top_coins)
 
@@ -164,7 +173,8 @@ class AutoTrader:
                     if not self.is_running:
                         break
                     time.sleep(1)
-                    self._process_ws_sells()  # WebSocket 트리거 매도 즉시 처리
+                    self._process_ws_sells()   # WebSocket 손절/트레일링 즉시 처리
+                    self._process_hot_buys()   # WebSocket 급등 감지 즉시 매수 분석
 
             except KeyboardInterrupt:
                 logger.info("\n사용자 중단 요청")
@@ -234,8 +244,69 @@ class AutoTrader:
                 break
 
     def _update_ws_subscriptions(self):
-        """현재 포지션 기반으로 WebSocket 구독 코인 갱신"""
-        self._ws_monitor.update_coins(set(self.positions.keys()))
+        """현재 포지션 기반으로 WebSocket 손절 구독 갱신"""
+        self._ws_monitor.update_position_coins(set(self.positions.keys()))
+
+    def _on_ws_surge(self, coin: str, price: float, change_pct: float):
+        """WebSocket 급등 감지 콜백 → 즉시 매수 분석 큐에 삽입"""
+        # 기본 필터: 이미 보유 중이거나 쿨다운/블랙리스트 코인은 건너뜀
+        if coin in self.positions:
+            return
+        if coin in COIN_BLACKLIST:
+            return
+        if self.daily_coin_stops.get(coin, 0) >= DAILY_COIN_STOP_LIMIT:
+            return
+        if time.time() <= self.sell_cooldown.get(coin, 0):
+            return
+        if len(self.positions) >= MAX_CONCURRENT_POSITIONS:
+            return
+        if not self._is_trading_hours():
+            return
+        self._hot_buy_queue.put((coin, price, change_pct))
+
+    def _process_hot_buys(self):
+        """WebSocket 급등 감지 큐 처리 - 즉시 전략 분석 후 매수 실행"""
+        while not self._hot_buy_queue.empty():
+            try:
+                coin, ws_price, change_pct = self._hot_buy_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            # 큐에 쌓인 동안 상황이 변했을 수 있으므로 재확인
+            if coin in self.positions:
+                continue
+            if len(self.positions) >= MAX_CONCURRENT_POSITIONS:
+                break
+            if time.time() <= self.sell_cooldown.get(coin, 0):
+                continue
+
+            logger.info(f"[WS 급등 분석] {coin} | +{change_pct:.1f}% → 매수 조건 검증 중")
+
+            # 최신 현재가 조회
+            price = self.api.get_current_price(coin)
+            if not price or price < MIN_PRICE_KRW:
+                continue
+
+            # 5분봉 캔들 분석 (전략 조건 전체 검증)
+            df = self.api.get_ohlcv(coin, interval=BUY_CANDLE_INTERVAL, count=BUY_CANDLE_COUNT)
+            if df is None:
+                continue
+
+            signal = self.strategy.check_buy_signal(coin, df, 0, current_price=price)
+            if not signal['buy']:
+                logger.info(f"[WS 급등 탈락] {coin} | {', '.join(signal['fail_reasons'])}")
+                continue
+
+            # 오더북/체결 매수세 확인
+            orderbook = self.api.get_orderbook(coin)
+            trades = self.api.get_recent_trades(coin, count=100)
+            pressure = self.strategy.check_buy_pressure(orderbook, trades)
+            if not pressure['strong']:
+                logger.info(f"[WS 급등 오더북 탈락] {coin} | {pressure['reason']}")
+                continue
+
+            logger.info(f"[WS 급등 매수] {coin} | {' | '.join(signal['reasons'])} | {pressure['reason']}")
+            self._execute_buy(coin, price, source="ws_surge")
 
     # ===== 일일 손실 한도 =====
 
