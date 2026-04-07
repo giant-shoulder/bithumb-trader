@@ -18,7 +18,7 @@ logger = get_logger()
 class WSPriceMonitor:
     """빗썸 WebSocket 실시간 가격 모니터"""
 
-    WS_URL = "wss://api.bithumb.com/websocket/v1"
+    WS_URL = "wss://ws-api.bithumb.com/websocket/v1"
 
     # 급등 감지 파라미터
     SURGE_WINDOW_SECS = 60    # 60초 윈도우 내
