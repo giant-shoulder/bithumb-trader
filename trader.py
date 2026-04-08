@@ -279,6 +279,11 @@ class AutoTrader:
                 break
             if time.time() <= self.sell_cooldown.get(coin, 0):
                 continue
+            if self.daily_coin_stops.get(coin, 0) >= DAILY_COIN_STOP_LIMIT:
+                logger.info(f"[WS 급등 탈락] {coin} | 당일 손절 한도 도달")
+                continue
+            if coin in COIN_BLACKLIST:
+                continue
 
             logger.info(f"[WS 급등 분석] {coin} | +{change_pct:.1f}% → 매수 조건 검증 중")
 

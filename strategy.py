@@ -258,11 +258,15 @@ class ClaudeStrategy:
 
         result['rsi'] = rsi_cur
 
-        # 1. MA5 > MA20 (필수)
+        # 1. MA5 > MA20 > MA60 (필수 - 단기+중기 정배열)
+        ma60 = self.calc_ma(df, MA_MID2).iloc[-1] if len(df) >= MA_MID2 else None
         if ma5 <= ma20:
             result['fail_reasons'].append(f"MA5({ma5:.0f}) <= MA20({ma20:.0f})")
             return result
-        result['reasons'].append("MA5 > MA20")
+        if ma60 is not None and ma20 <= ma60:
+            result['fail_reasons'].append(f"MA20({ma20:.0f}) <= MA60({ma60:.0f}) - 중기 하락추세")
+            return result
+        result['reasons'].append("MA5 > MA20 > MA60")
 
         # 2. RSI 매수 구간 AND 상승 중 (필수)
         if not (RSI_BUY_MIN <= rsi_cur <= RSI_BUY_MAX):
@@ -307,9 +311,9 @@ class ClaudeStrategy:
         if self.is_breaking_high(df):
             result['reasons'].append("전고점 돌파")
 
-        # 8. 정배열 (보너스)
+        # 8. 장기 정배열 (보너스) - MA60 > MA120
         if self.is_bullish_alignment(df):
-            result['reasons'].append("정배열")
+            result['reasons'].append("장기정배열")
 
         result['buy'] = True
         return result
