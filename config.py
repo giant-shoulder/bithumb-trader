@@ -35,9 +35,9 @@ PREV_HIGH_PERIOD = 120       # 전고점 기간 (캔들 수)
 MIN_PRICE_KRW = 50           # 최소 코인 가격 (원) - 초저가 코인 스프레드 손실 방지 (2026-03-31)
 
 # 매수 실행
-MAX_POSITION_KRW = 750000    # 코인당 최대 투자금액 (원)
+MAX_POSITION_KRW = 1050000   # 코인당 최대 투자금액 (원)
 BUY_SPLIT = 5                # 불타기 분할 횟수
-BUY_UNIT_KRW = 150000        # 1회 매수 금액 (10만→15만)
+BUY_UNIT_KRW = 210000        # 1회 매수 금액 (15만→21만)
 MAX_CONCURRENT_POSITIONS = 3  # 최대 동시 포지션 수
 
 # ===== 손절/익절 (고정값, 단순) =====
