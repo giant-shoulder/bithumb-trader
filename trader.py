@@ -19,6 +19,7 @@ from config import (
     COOLDOWN_AFTER_STOP_LOSS, COOLDOWN_AFTER_TAKE_PROFIT,
     DAILY_LOSS_LIMIT_PCT,
     BUY_LIMIT_OFFSET_PCT,
+    MIN_BUY_KRW,
     MAX_CONCURRENT_POSITIONS,
     MIN_PRICE_KRW,
     TRADING_BLOCK_START, TRADING_BLOCK_END,
@@ -662,9 +663,8 @@ class AutoTrader:
 
             # 신규 매수
             krw_balance = self.api.get_krw_balance()
-            MIN_ORDER_KRW = 5000  # 빗썸 최소 주문금액
-            if krw_balance < MIN_ORDER_KRW:
-                logger.warning(f"원화 잔고 부족: {krw_balance:,.0f}원 (최소: {MIN_ORDER_KRW:,}원)")
+            if krw_balance < MIN_BUY_KRW:
+                logger.warning(f"[매수 차단] {coin} | 잔고 부족 ({krw_balance:,.0f}원 < 최소 {MIN_BUY_KRW:,}원) - 소액 포지션 방지")
                 return
             krw = min(BUY_UNIT_KRW, int(krw_balance * 0.995))
             if krw < BUY_UNIT_KRW:
