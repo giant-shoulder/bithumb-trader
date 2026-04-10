@@ -20,6 +20,8 @@ from config import (
     DAILY_LOSS_LIMIT_PCT,
     BUY_LIMIT_OFFSET_PCT,
     MIN_BUY_KRW,
+    MIN_POSITION_KRW,
+    PRIORITY_COINS,
     MAX_CONCURRENT_POSITIONS,
     MIN_PRICE_KRW,
     TRADING_BLOCK_START, TRADING_BLOCK_END,
@@ -102,6 +104,10 @@ class AutoTrader:
                 balance = float(acc.get('balance', 0))
                 avg_price = float(acc.get('avg_buy_price', 0))
                 if coin == 'KRW' or coin == 'P' or balance <= 0 or avg_price <= 0:
+                    continue
+                position_value = balance * avg_price
+                if position_value < MIN_POSITION_KRW:
+                    logger.info(f"[더스트 스킵] {coin}: {position_value:.0f}원 (최소 {MIN_POSITION_KRW:,}원 미만)")
                     continue
                 self.positions[coin] = Position(
                     coin=coin,
@@ -607,8 +613,8 @@ class AutoTrader:
             logger.info("[매수 탐색 완료] 조건 통과 종목 없음")
             return
 
-        # RSI 가장 낮은 것 선택 (추가 상승 여력 최대)
-        buy_candidates.sort(key=lambda x: x[1]['rsi'])
+        # RSI 가장 낮은 것 선택 (추가 상승 여력 최대), 우선 종목은 앞으로
+        buy_candidates.sort(key=lambda x: (0 if x[0]['coin'] in PRIORITY_COINS else 1, x[1]['rsi']))
 
         # 오더북/체결 매수세 필터 - 상위 후보부터 통과하는 첫 번째 선택
         final_coin_data, final_signal = None, None
