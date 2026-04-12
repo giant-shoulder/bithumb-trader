@@ -191,7 +191,7 @@ class ClaudeStrategy:
 
         # 판단: 둘 다 충족해야 매수 (AND), 기준은 완화
         bid_ok = bid_ratio >= 1.2      # 매수잔량이 매도잔량의 1.2배 이상 (1.05→1.3→1.1→1.2)
-        trade_ok = trade_ratio >= 0.58  # 최근 체결 58% 이상이 매수
+        trade_ok = trade_ratio >= 0.62  # 최근 체결 62% 이상이 매수 (58→62, PHA 59% 겨우통과 손절 방지)
 
         if bid_ok and trade_ok:
             result['strong'] = True
@@ -201,7 +201,7 @@ class ClaudeStrategy:
             if not bid_ok:
                 reasons.append(f"호가비율 약함({bid_ratio:.2f}<1.2)")
             if not trade_ok:
-                reasons.append(f"체결비율 약함({trade_ratio:.0%}<58%)")
+                reasons.append(f"체결비율 약함({trade_ratio:.0%}<62%)")
             result['reason'] = ', '.join(reasons)
 
         return result
