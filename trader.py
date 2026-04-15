@@ -123,6 +123,8 @@ class AutoTrader:
 
     def _is_trading_hours(self) -> bool:
         """KST 기준 거래 허용 시간인지 확인 (매수 전용, 매도는 항상 가능)"""
+        if TRADING_BLOCK_START is None or TRADING_BLOCK_END is None:
+            return True
         now_kst = datetime.now(KST)
         return not (TRADING_BLOCK_START <= now_kst.hour < TRADING_BLOCK_END)
 

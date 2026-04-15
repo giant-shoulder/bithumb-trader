@@ -76,8 +76,8 @@ BB_PERIOD = 20
 BB_STD = 2.0
 
 # ===== 거래 시간 제한 =====
-TRADING_BLOCK_START = 0   # 매수 차단 시작 (KST) - 자정부터 차단 (00시 수익률 나빠서 확장)
-TRADING_BLOCK_END = 8     # 매수 차단 종료 (KST)
+TRADING_BLOCK_START = None  # 매수 차단 없음 (시간 제한 해제)
+TRADING_BLOCK_END = None    # 매수 차단 없음 (시간 제한 해제)
 
 # ===== 캔들 간격 =====
 BUY_CANDLE_INTERVAL = "5m"   # 매수 신호용 캔들 간격
