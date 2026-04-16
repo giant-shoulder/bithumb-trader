@@ -11,6 +11,7 @@ from bithumb_api import BithumbAPI
 from strategy import ClaudeStrategy
 from logger import get_logger, TradeLogger
 from ws_price_monitor import WSPriceMonitor
+import notifier
 from config import (
     MAX_POSITION_KRW, BUY_UNIT_KRW, BUY_SPLIT,
     POLLING_INTERVAL_IDLE, POLLING_INTERVAL_ACTIVE,
@@ -496,6 +497,7 @@ class AutoTrader:
             logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}% ({pnl_krw:+,.0f}원) "
                         f"| 오늘 누적: {self.daily_pnl_krw:+,.0f}원 "
                         f"| 쿨다운: {cooldown_label}")
+            notifier.notify_sell(coin, actual_exec_price, int(sell_amount), pnl_pct, pnl_krw, reason)
 
     # ===== 텔레그램 신호 처리 =====
 
@@ -703,6 +705,8 @@ class AutoTrader:
                 )
             trade_logger.log_trade(coin, "매수", price, quantity, krw, reason="매수신호", source=source)
             logger.info(f"[매수 완료] {coin} | 가격={price:,.0f} 금액={krw:,.0f}원 [{source}]")
+            buy_count = self.positions[coin].buy_count if coin in self.positions else 1
+            notifier.notify_buy(coin, price, krw, buy_count, BUY_SPLIT, source)
             self._update_ws_subscriptions()  # 새 포지션 WebSocket 구독 추가
 
     # ===== 상태 조회 =====
