@@ -96,19 +96,24 @@ class AlphaTrendStrategy:
         result['at_color'] = at_colors
         return result
 
-    # ===== 1단계: 확인 (AT green 전환 감지) =====
+    # ===== AT 신호 감지 + 즉시 진입 (확인→진입 2단계) =====
 
     def check_alpha_trend_signal(self, coin: str, df: pd.DataFrame,
                                   current_price: float = None) -> dict:
-        """AT green 전환 감지 - 확인 단계
+        """AT green 전환 감지 + 손절/익절가 계산 (즉시 진입용)
 
         조건:
         1. 직전 캔들 AT non-green → 현재 캔들 AT green 전환
         2. MA20 > MA60 (중기 상승 추세)
         3. 현재가 > AT 값
-        4. 최소 가격 필터
+
+        손절: AT값 기반 (클리핑 STOP_LOSS_MIN_PCT~STOP_LOSS_MAX_PCT)
+        익절: 진입가 + 리스크 * RR_RATIO
         """
-        result = {'signal': False, 'reason': '', 'at_value': 0.0}
+        result = {
+            'signal': False, 'reason': '', 'at_value': 0.0,
+            'stop_loss_price': 0.0, 'take_profit_price': 0.0,
+        }
         price = current_price if current_price else df['close'].iloc[-1]
 
         if price < MIN_PRICE_KRW:
@@ -146,9 +151,22 @@ class AlphaTrendStrategy:
             result['reason'] = f'가격({price:.0f}) <= AT({cur_at:.0f})'
             return result
 
+        # 손절가: AT값 기반 (클리핑)
+        raw_stop_pct = (price - cur_at) / price * 100
+        stop_pct = max(STOP_LOSS_MIN_PCT, min(STOP_LOSS_MAX_PCT, raw_stop_pct))
+        stop_loss_price = price * (1 - stop_pct / 100)
+        risk = price - stop_loss_price
+        take_profit_price = price + risk * RR_RATIO
+        target_pct = risk * RR_RATIO / price * 100
+
         result['signal'] = True
         result['at_value'] = cur_at
-        result['reason'] = (f'AT green 전환 | MA20={ma20:.0f}>MA60={ma60:.0f} | AT={cur_at:.0f}')
+        result['stop_loss_price'] = stop_loss_price
+        result['take_profit_price'] = take_profit_price
+        result['reason'] = (
+            f'AT green 전환 | MA20={ma20:.0f}>MA60={ma60:.0f} | AT={cur_at:.0f} | '
+            f'손절={stop_loss_price:.0f}(-{stop_pct:.1f}%) 익절={take_profit_price:.0f}(+{target_pct:.1f}%)'
+        )
         logger.info(f"[AT 신호] {coin} | {result['reason']}")
         return result
 
