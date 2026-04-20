@@ -1,6 +1,7 @@
 """
 자동매매 실행 엔진
-Claude 전략 기반 빗섬 자동매매
+AlphaTrend 리듬 단타 전략 (제이슨 노아 방법론)
+3단계: 확인(AT green) → 반응(눌림목 대기) → 진입(반등 양봉)
 """
 import time
 import queue
@@ -8,15 +9,14 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from bithumb_api import BithumbAPI
-from strategy import ClaudeStrategy
+from strategy import AlphaTrendStrategy
 from logger import get_logger, TradeLogger
 from ws_price_monitor import WSPriceMonitor
 import notifier
 from config import (
-    MAX_POSITION_KRW, BUY_UNIT_KRW, BUY_SPLIT,
+    MAX_POSITION_KRW, BUY_UNIT_KRW,
     POLLING_INTERVAL_IDLE, POLLING_INTERVAL_ACTIVE,
     MOMENTUM_TOP_N, MIN_VOLUME_24H_KRW,
-    MIN_HOLD_SECONDS,
     COOLDOWN_AFTER_STOP_LOSS, COOLDOWN_AFTER_TAKE_PROFIT,
     DAILY_LOSS_LIMIT_PCT,
     BUY_LIMIT_OFFSET_PCT,
@@ -29,13 +29,17 @@ from config import (
     BUY_CANDLE_INTERVAL, BUY_CANDLE_COUNT,
     COIN_BLACKLIST,
     DAILY_COIN_STOP_LIMIT,
-    HARD_STOP_MIN_HOLD_SECONDS,
+    PULLBACK_MAX_CANDLES,
+    AT_NOISE_EXIT,
 )
 
 KST = timezone(timedelta(hours=9))
 
 logger = get_logger()
 trade_logger = TradeLogger()
+
+# 5분봉 캔들 길이(초) - 눌림목 대기 타임아웃 계산용
+_CANDLE_SECS = 5 * 60
 
 
 @dataclass
@@ -44,32 +48,23 @@ class Position:
     coin: str
     buy_price: float
     quantity: float
-    buy_count: int = 1           # 불타기 횟수
-    total_amount: float = 0.0    # 총 투자금액
-    highest_price: float = 0.0   # 진입 후 최고가 (트레일링 스탑용)
+    stop_loss_price: float = 0.0    # AT 기반 절대 손절가
+    take_profit_price: float = 0.0  # R:R 기반 절대 익절가
+    total_amount: float = 0.0       # 총 투자금액
     entry_time: str = ""
 
     def __post_init__(self):
         self.entry_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if not self.total_amount:
             self.total_amount = self.buy_price * self.quantity
-        if not self.highest_price:
-            self.highest_price = self.buy_price
-
-    @property
-    def pnl_pct(self) -> float:
-        return (self.current_price - self.buy_price) / self.buy_price * 100 if hasattr(self, '_current_price') else 0.0
-
-    def avg_price(self) -> float:
-        return self.total_amount / self.quantity if self.quantity > 0 else 0
 
 
 class AutoTrader:
     def __init__(self, dry_run: bool = False):
         self.api = BithumbAPI()
-        self.strategy = ClaudeStrategy()
+        self.strategy = AlphaTrendStrategy()
         self.positions: dict[str, Position] = {}
-        self.sell_cooldown: dict[str, float] = {}  # coin -> cooldown_end_timestamp
+        self.sell_cooldown: dict[str, float] = {}   # coin -> cooldown_end_timestamp
         self.daily_coin_stops: dict[str, int] = {}  # coin -> 당일 손절 횟수
         self.is_running = False
         self.dry_run = dry_run
@@ -77,17 +72,21 @@ class AutoTrader:
         self.daily_reset_date = datetime.now().date()
         self.telegram_queue: queue.Queue = queue.Queue()
 
+        # pending_signals: AT green 전환 감지 후 눌림목 대기 중인 신호
+        # { coin: { 'at_value': float, 'signal_time': float } }
+        self.pending_signals: dict = {}
+
         # WebSocket 실시간 가격 모니터
-        self._ws_sell_queue: queue.Queue = queue.Queue()   # 손절/트레일링 즉시 매도 큐
-        self._hot_buy_queue: queue.Queue = queue.Queue()   # 급등 감지 즉시 매수 분석 큐
+        self._ws_sell_queue: queue.Queue = queue.Queue()   # 손절/익절 즉시 매도 큐
+        self._hot_buy_queue: queue.Queue = queue.Queue()   # 급등 감지 즉시 분석 큐
         self._ws_monitor = WSPriceMonitor(
             on_stop_signal=self._on_ws_price,
             on_surge_detected=self._on_ws_surge,
         )
         self._ws_monitor.start()
         logger.info("=" * 50)
-        logger.info("빗섬 자동매매 시스템 시작 (Claude 전략 v2)")
-        logger.info(f"설정: 하드손절 -1.2% | 트레일링 +1%/-0.5% | 익절 +4%")
+        logger.info("빗섬 자동매매 시스템 시작 (AlphaTrend 리듬 단타)")
+        logger.info(f"설정: 손절 0.5~2.5% | 익절 R:R 1:1.5 | AT 노이즈 청산 {AT_NOISE_EXIT}")
         logger.info(f"설정: 최소가격 {MIN_PRICE_KRW}원 | 거래중단 {TRADING_BLOCK_START}~{TRADING_BLOCK_END}시")
         logger.info(f"설정: 최대 포지션 {MAX_CONCURRENT_POSITIONS}개 | 캔들 {BUY_CANDLE_INTERVAL}")
         logger.info("=" * 50)
@@ -110,13 +109,15 @@ class AutoTrader:
                 if position_value < MIN_POSITION_KRW:
                     logger.info(f"[더스트 스킵] {coin}: {position_value:.0f}원 (최소 {MIN_POSITION_KRW:,}원 미만)")
                     continue
+                # 기존 포지션은 stop/take 미설정 (0.0) → WebSocket 자동매도 없이 수동 관리
                 self.positions[coin] = Position(
                     coin=coin,
                     buy_price=avg_price,
                     quantity=balance,
                     total_amount=avg_price * balance,
                 )
-                logger.info(f"[기존 포지션 로드] {coin}: {balance:.6f}개 @ {avg_price:,.0f}원")
+                logger.info(f"[기존 포지션 로드] {coin}: {balance:.6f}개 @ {avg_price:,.0f}원 "
+                            f"(stop/take 미설정 → 폴링 관리)")
         except Exception as e:
             logger.error(f"기존 포지션 로드 실패: {e}")
 
@@ -142,9 +143,7 @@ class AutoTrader:
 
                 # 일일 손실 한도 체크
                 if not self._check_daily_loss_limit():
-                    interval = POLLING_INTERVAL_IDLE
-                    logger.info(f"다음 실행: {interval}초 후")
-                    time.sleep(interval)
+                    time.sleep(POLLING_INTERVAL_IDLE)
                     continue
 
                 # 1. 거래대금 상위 코인 조회
@@ -161,30 +160,33 @@ class AutoTrader:
                     {c['coin'] for c in top_coins if c['coin'] not in COIN_BLACKLIST}
                 )
 
-                # 2. 보유 포지션 관리 (매도 우선 - 항상 실행)
+                # 2. 보유 포지션 관리 (AT 노이즈 청산 / 모멘텀 소멸)
                 self._manage_positions(top_coins)
 
-                # 3. 텔레그램 신호 처리 (거래 시간 내에만)
+                # 3. 눌림목 대기 신호 체크 (진입 확인)
+                self._check_pending_signals()
+
+                # 4. 텔레그램 신호 처리 (거래 시간 내에만)
                 if self._is_trading_hours():
                     self._process_telegram_signals()
 
-                # 4. 신규 매수 탐색 (거래 시간 내에만)
+                # 5. 신규 AT 신호 탐색 (거래 시간 내에만)
                 if self._is_trading_hours():
                     self._scan_for_entry(top_coins)
                 else:
-                    logger.info(f"[거래시간 외] 현재 {now_kst.strftime('%H:%M')} KST "
-                                f"(차단: {TRADING_BLOCK_START}:00~{TRADING_BLOCK_END}:00) - 매수 탐색 스킵")
+                    logger.info(f"[거래시간 외] 현재 {now_kst.strftime('%H:%M')} KST - 매수 탐색 스킵")
 
-                # 5. 포지션 유무에 따라 대기 시간 결정
-                # 1초 단위로 슬립하며 WebSocket 매도 큐를 즉시 처리
-                interval = POLLING_INTERVAL_ACTIVE if self.positions else POLLING_INTERVAL_IDLE
-                logger.info(f"다음 실행: {interval}초 후 ({'포지션 있음' if self.positions else '대기 중'})")
+                # 6. 대기 (포지션/pending 있으면 짧게, 없으면 길게)
+                has_active = bool(self.positions) or bool(self.pending_signals)
+                interval = POLLING_INTERVAL_ACTIVE if has_active else POLLING_INTERVAL_IDLE
+                label = '포지션/신호 있음' if has_active else '대기 중'
+                logger.info(f"다음 실행: {interval}초 후 ({label})")
                 for _ in range(interval):
                     if not self.is_running:
                         break
                     time.sleep(1)
-                    self._process_ws_sells()   # WebSocket 손절/트레일링 즉시 처리
-                    self._process_hot_buys()   # WebSocket 급등 감지 즉시 매수 분석
+                    self._process_ws_sells()   # WebSocket 손절/익절 즉시 처리
+                    self._process_hot_buys()   # WebSocket 급등 감지 즉시 분석
 
             except KeyboardInterrupt:
                 logger.info("\n사용자 중단 요청")
@@ -212,37 +214,23 @@ class AutoTrader:
     # ===== WebSocket 실시간 가격 모니터 =====
 
     def _on_ws_price(self, coin: str, price: float):
-        """WebSocket 실시간 가격 콜백 - 하드손절/트레일링 즉시 감지"""
+        """WebSocket 실시간 가격 콜백 - 절대 손절/익절 즉시 감지"""
         pos = self.positions.get(coin)
         if not pos:
             return
 
-        # 최고가 갱신 (트레일링 스탑용)
-        if price > pos.highest_price:
-            pos.highest_price = price
+        # stop/take 미설정 포지션 (기존 포지션)은 스킵
+        if pos.stop_loss_price <= 0 and pos.take_profit_price <= 0:
+            return
 
-        hold_secs = (datetime.now() - datetime.strptime(
-            pos.entry_time, "%Y-%m-%d %H:%M:%S"
-        )).total_seconds()
-
-        # 하드 손절 체크
-        if hold_secs >= HARD_STOP_MIN_HOLD_SECONDS:
-            hard = self.strategy.check_hard_stop(coin, pos.buy_price, price)
-            if hard['sell']:
-                # positions에서 즉시 제거 → 메인 루프 중복 매도 방지
-                removed = self.positions.pop(coin, None)
-                if removed:
-                    logger.info(f"[WS 손절 감지] {coin} | {hard['reason']}")
-                    self._ws_sell_queue.put((coin, removed, price, hard['reason'], True))
-                return
-
-        # 트레일링 스탑 체크
-        trail = self.strategy.check_trailing_stop(coin, pos.buy_price, price, pos.highest_price)
-        if trail['sell']:
+        result = self.strategy.check_at_stop_take(
+            coin, price, pos.stop_loss_price, pos.take_profit_price
+        )
+        if result['sell']:
             removed = self.positions.pop(coin, None)
             if removed:
-                logger.info(f"[WS 트레일링 감지] {coin} | {trail['reason']}")
-                self._ws_sell_queue.put((coin, removed, price, trail['reason'], False))
+                logger.info(f"[WS 즉시 매도] {coin} | {result['reason']}")
+                self._ws_sell_queue.put((coin, removed, price, result['reason'], result['is_stop_loss']))
 
     def _process_ws_sells(self):
         """WebSocket 트리거 매도 큐 처리 (1초마다 메인 루프에서 호출)"""
@@ -254,13 +242,12 @@ class AutoTrader:
                 break
 
     def _update_ws_subscriptions(self):
-        """현재 포지션 기반으로 WebSocket 손절 구독 갱신"""
+        """현재 포지션 기반으로 WebSocket 손절/익절 구독 갱신"""
         self._ws_monitor.update_position_coins(set(self.positions.keys()))
 
     def _on_ws_surge(self, coin: str, price: float, change_pct: float):
-        """WebSocket 급등 감지 콜백 → 즉시 매수 분석 큐에 삽입"""
-        # 기본 필터: 이미 보유 중이거나 쿨다운/블랙리스트 코인은 건너뜀
-        if coin in self.positions:
+        """WebSocket 급등 감지 콜백 → AT 신호 분석 큐 삽입"""
+        if coin in self.positions or coin in self.pending_signals:
             return
         if coin in COIN_BLACKLIST:
             return
@@ -275,58 +262,47 @@ class AutoTrader:
         self._hot_buy_queue.put((coin, price, change_pct))
 
     def _process_hot_buys(self):
-        """WebSocket 급등 감지 큐 처리 - 즉시 전략 분석 후 매수 실행"""
+        """WebSocket 급등 감지 큐 처리 - AT 신호 확인 후 pending 등록"""
         while not self._hot_buy_queue.empty():
             try:
                 coin, ws_price, change_pct = self._hot_buy_queue.get_nowait()
             except queue.Empty:
                 break
 
-            # 큐에 쌓인 동안 상황이 변했을 수 있으므로 재확인
-            if coin in self.positions:
+            if coin in self.positions or coin in self.pending_signals:
                 continue
             if len(self.positions) >= MAX_CONCURRENT_POSITIONS:
                 break
             if time.time() <= self.sell_cooldown.get(coin, 0):
                 continue
             if self.daily_coin_stops.get(coin, 0) >= DAILY_COIN_STOP_LIMIT:
-                logger.info(f"[WS 급등 탈락] {coin} | 당일 손절 한도 도달")
                 continue
             if coin in COIN_BLACKLIST:
                 continue
 
-            logger.info(f"[WS 급등 분석] {coin} | +{change_pct:.1f}% → 매수 조건 검증 중")
+            logger.info(f"[WS 급등 AT 확인] {coin} | +{change_pct:.1f}%")
 
-            # 최신 현재가 조회
             price = self.api.get_current_price(coin)
             if not price or price < MIN_PRICE_KRW:
                 continue
 
-            # 5분봉 캔들 분석 (전략 조건 전체 검증)
             df = self.api.get_ohlcv(coin, interval=BUY_CANDLE_INTERVAL, count=BUY_CANDLE_COUNT)
             if df is None:
                 continue
 
-            signal = self.strategy.check_buy_signal(coin, df, 0, current_price=price)
-            if not signal['buy']:
-                logger.info(f"[WS 급등 탈락] {coin} | {', '.join(signal['fail_reasons'])}")
-                continue
-
-            # 오더북/체결 매수세 확인
-            orderbook = self.api.get_orderbook(coin)
-            trades = self.api.get_recent_trades(coin, count=100)
-            pressure = self.strategy.check_buy_pressure(orderbook, trades)
-            if not pressure['strong']:
-                logger.info(f"[WS 급등 오더북 탈락] {coin} | {pressure['reason']}")
-                continue
-
-            logger.info(f"[WS 급등 매수] {coin} | {' | '.join(signal['reasons'])} | {pressure['reason']}")
-            self._execute_buy(coin, price, source="ws_surge")
+            signal = self.strategy.check_alpha_trend_signal(coin, df, current_price=price)
+            if signal['signal']:
+                logger.info(f"[WS 급등 → pending 등록] {coin} | {signal['reason']}")
+                self.pending_signals[coin] = {
+                    'at_value': signal['at_value'],
+                    'signal_time': time.time(),
+                }
+            else:
+                logger.info(f"[WS 급등 AT 탈락] {coin} | {signal['reason']}")
 
     # ===== 일일 손실 한도 =====
 
     def _check_daily_loss_limit(self) -> bool:
-        """일일 손실 한도 체크. 한도 초과 시 False 반환"""
         today = datetime.now().date()
         if today != self.daily_reset_date:
             self.daily_pnl_krw = 0.0
@@ -344,100 +320,73 @@ class AutoTrader:
     # ===== 거래대금 상위 코인 =====
 
     def _get_top_coins(self) -> list:
-        """전체 KRW 종목 모멘텀 스캔"""
         return self.api.scan_momentum_coins(
             min_volume_24h=MIN_VOLUME_24H_KRW,
             top_n=MOMENTUM_TOP_N
         )
 
     def _log_market_overview(self, top_coins: list):
-        """시장 현황 로그"""
         logger.info("모멘텀 상위 코인:")
         for i, c in enumerate(top_coins[:5], 1):
             logger.info(f"  {i}위 {c['coin']}: {c['volume_krw']/1e8:.1f}억 | {c['change_pct']:+.1f}% | 스코어={c['score']:.2e}")
 
-    # ===== 포지션 관리 (매도) =====
+    # ===== 포지션 관리 (AT 노이즈 청산 / 모멘텀 소멸) =====
 
     def _manage_positions(self, top_coins: list):
         """보유 포지션 매도 판단
 
-        핵심 수정: 하드 손절(-1.2%)은 MIN_HOLD_SECONDS와 무관하게 항상 체크.
-        트레일링/RSI/BB/MACD 등 일반 매도는 MIN_HOLD_SECONDS 경과 후에만.
+        WebSocket이 stop/take를 실시간 처리하므로
+        여기서는 AT yellow 노이즈 청산과 모멘텀 소멸만 처리.
         """
         if not self.positions:
             return
 
+        volume_rank_map = {c['coin']: i + 1 for i, c in enumerate(top_coins)}
         coins_to_sell = []
-        # 스캔 결과 내 순위 (없으면 999 -> 모멘텀 소멸로 간주)
-        volume_rank_map = {c['coin']: i+1 for i, c in enumerate(top_coins)}
 
-        for coin, pos in self.positions.items():
+        for coin, pos in list(self.positions.items()):
             current_price = self.api.get_current_price(coin)
             if not current_price:
                 continue
 
-            # 최고가 갱신 (트레일링 스탑용)
-            if current_price > pos.highest_price:
-                pos.highest_price = current_price
-
             pnl_pct = (current_price - pos.buy_price) / pos.buy_price * 100
             rank = volume_rank_map.get(coin, 999)
 
-            # === 1단계: 하드 손절/익절 + 트레일링 ===
-            hold_secs_hard = (datetime.now() - datetime.strptime(pos.entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
-            hard_signal = self.strategy.check_hard_stop(coin, pos.buy_price, current_price)
-            if hard_signal['sell']:
-                if hold_secs_hard < HARD_STOP_MIN_HOLD_SECONDS:
-                    logger.debug(f"[{coin}] 하드 손절 대기: 보유 {hold_secs_hard:.0f}s < {HARD_STOP_MIN_HOLD_SECONDS}s "
-                                 f"(손익={pnl_pct:+.1f}%)")
-                else:
+            # 1. 모멘텀 소멸 체크
+            momentum = self.strategy.check_momentum_exit(coin, rank)
+            if momentum['sell']:
+                logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
+                            f"손익={pnl_pct:+.1f}% | {momentum['reason']}")
+                coins_to_sell.append((coin, pos, current_price, momentum))
+                continue
+
+            # 2. AT 노이즈 청산 (yellow 전환)
+            if AT_NOISE_EXIT:
+                df = self.api.get_ohlcv(coin, interval="5m", count=BUY_CANDLE_COUNT)
+                if df is not None and self.strategy.check_at_noise_exit(coin, df):
+                    signal = {
+                        'sell': True,
+                        'reason': 'AT yellow 노이즈 청산',
+                        'is_stop_loss': False,
+                    }
                     logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
-                                f"손익={pnl_pct:+.1f}% | [즉시 매도] {hard_signal['reason']}")
-                    coins_to_sell.append((coin, pos, current_price, hard_signal))
+                                f"손익={pnl_pct:+.1f}% | {signal['reason']}")
+                    coins_to_sell.append((coin, pos, current_price, signal))
                     continue
 
-            trail_signal = self.strategy.check_trailing_stop(coin, pos.buy_price, current_price, pos.highest_price)
-            if trail_signal['sell']:
-                logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
-                            f"손익={pnl_pct:+.1f}% | [즉시 매도] {trail_signal['reason']}")
-                coins_to_sell.append((coin, pos, current_price, trail_signal))
-                continue
-
-            # === 2단계: 최소 보유시간 체크 (RSI/MACD/BB/모멘텀 매도에만 적용) ===
-            hold_secs = (datetime.now() - datetime.strptime(pos.entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
-            if hold_secs < MIN_HOLD_SECONDS:
-                logger.debug(f"[{coin}] 최소 보유시간 미충족: {hold_secs:.0f}s / {MIN_HOLD_SECONDS}s "
-                             f"(손익={pnl_pct:+.1f}%)")
-                continue
-
-            # === 3단계: 일반 매도 신호 (트레일링/모멘텀/RSI/BB/MACD) ===
-            # 5분봉은 매도에는 불필요하지만 RSI/BB/MACD 체크용으로 가져옴
-            df = self.api.get_ohlcv(coin, interval="5m", count=200)
-
-            signal = self.strategy.check_sell_signal(
-                coin, pos.buy_price, current_price, rank,
-                pos.highest_price, df
-            )
-
-            # 상태 로그
-            drop_from_high = (pos.highest_price - current_price) / pos.highest_price * 100 if pos.highest_price > 0 else 0
-            status_str = f"매도신호: {signal['reason']}" if signal['sell'] else f"보유중 | 고점대비 -{drop_from_high:.2f}%"
+            # 상태 로그 (stop/take는 WS가 처리 중)
+            stop_str = f"{pos.stop_loss_price:,.0f}" if pos.stop_loss_price > 0 else "미설정"
+            take_str = f"{pos.take_profit_price:,.0f}" if pos.take_profit_price > 0 else "미설정"
             logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
-                        f"손익={pnl_pct:+.1f}% | {status_str}")
-
-            if signal['sell']:
-                coins_to_sell.append((coin, pos, current_price, signal))
+                        f"손익={pnl_pct:+.1f}% | 손절={stop_str} 익절={take_str}")
 
         for coin, pos, price, signal in coins_to_sell:
             self._execute_sell(coin, pos, price, signal['reason'], signal.get('is_stop_loss', False))
 
+    # ===== 매도 실행 =====
+
     def _execute_sell(self, coin: str, pos: Position, price: float, reason: str,
                       is_stop_loss: bool = False):
-        """매도 실행
-
-        Args:
-            is_stop_loss: True면 손절 쿨다운(1시간) 적용, False면 익절 쿨다운(10분) 적용
-        """
         logger.info(f"[매도 실행] {coin} | 사유: {reason}")
         if self.dry_run:
             logger.info(f"[DRY] 매도 생략: {coin} {pos.quantity}")
@@ -446,21 +395,21 @@ class AutoTrader:
             self.sell_cooldown[coin] = time.time() + cooldown
             self._update_ws_subscriptions()
             return
-        # 실제 잔고 조회 (추적 수량과 오차 방지)
+
         actual_qty = self.api.get_coin_balance(coin)
         if actual_qty <= 0:
             logger.warning(f"[{coin}] 실제 잔고 없음, 포지션 제거")
             self.positions.pop(coin, None)
             self._update_ws_subscriptions()
             return
+
         result = self.api.sell_market(coin, actual_qty)
         if result:
-            # 실제 체결 금액 조회 (시장가는 체결가가 추정가와 다를 수 있음)
             order_id = result.get('order_id') or result.get('uuid')
             actual_amount = None
             actual_exec_price = price
             if order_id:
-                time.sleep(0.5)  # 체결 확정 대기
+                time.sleep(0.5)
                 order_detail = self.api.get_order(order_id)
                 if order_detail:
                     executed_funds = float(order_detail.get('executed_funds', 0) or 0)
@@ -469,25 +418,21 @@ class AutoTrader:
                         actual_amount = executed_funds
                         if executed_vol > 0:
                             actual_exec_price = executed_funds / executed_vol
-                        logger.info(f"[{coin}] 실제 체결: {executed_funds:,.0f}원 (추정: {actual_qty * price:,.0f}원)")
+                        logger.info(f"[{coin}] 실제 체결: {executed_funds:,.0f}원")
 
             sell_amount = actual_amount if actual_amount else actual_qty * price
             pnl_krw = sell_amount - pos.total_amount
             pnl_pct = pnl_krw / pos.total_amount * 100
-            trade_logger.log_trade(
-                coin, "매도", actual_exec_price, actual_qty,
-                sell_amount, pnl_pct, reason
-            )
+            trade_logger.log_trade(coin, "매도", actual_exec_price, actual_qty,
+                                   sell_amount, pnl_pct, reason)
             self.daily_pnl_krw += pnl_krw
-            self.positions.pop(coin, None)  # WebSocket이 이미 제거했을 수 있으므로 pop 사용
+            self.positions.pop(coin, None)
             self._update_ws_subscriptions()
 
-            # 쿨다운 적용: 손절이면 1시간, 익절이면 4시간
             cooldown = COOLDOWN_AFTER_STOP_LOSS if is_stop_loss else COOLDOWN_AFTER_TAKE_PROFIT
             self.sell_cooldown[coin] = time.time() + cooldown
             cooldown_label = "1시간" if is_stop_loss else "4시간"
 
-            # 손절 횟수 누적 및 당일 블랙리스트 체크
             if is_stop_loss:
                 self.daily_coin_stops[coin] = self.daily_coin_stops.get(coin, 0) + 1
                 stops_today = self.daily_coin_stops[coin]
@@ -495,14 +440,13 @@ class AutoTrader:
                     logger.warning(f"[당일 블랙리스트] {coin} | 오늘 손절 {stops_today}회 → 오늘 재매수 금지")
 
             logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}% ({pnl_krw:+,.0f}원) "
-                        f"| 오늘 누적: {self.daily_pnl_krw:+,.0f}원 "
-                        f"| 쿨다운: {cooldown_label}")
+                        f"| 오늘 누적: {self.daily_pnl_krw:+,.0f}원 | 쿨다운: {cooldown_label}")
             notifier.notify_sell(coin, actual_exec_price, int(sell_amount), pnl_pct, pnl_krw, reason)
 
     # ===== 텔레그램 신호 처리 =====
 
     def _process_telegram_signals(self):
-        """텔레그램 신호 큐 처리 - 기술적 분석 통과 시 매수"""
+        """텔레그램 신호 큐 처리 - AT 분석 통과 시 pending 등록"""
         while not self.telegram_queue.empty():
             try:
                 signal = self.telegram_queue.get_nowait()
@@ -511,62 +455,110 @@ class AutoTrader:
 
             coin = signal['coin']
             alert_type = signal['type']
-            logger.info(f"[텔레그램 신호 처리] {coin} | {alert_type}")
+            logger.info(f"[텔레그램 신호] {coin} | {alert_type}")
 
-            # 블랙리스트 체크 (글로벌 + 당일)
             if coin in COIN_BLACKLIST:
-                logger.info(f"[텔레그램] {coin} 블랙리스트, 스킵")
                 continue
             if self.daily_coin_stops.get(coin, 0) >= DAILY_COIN_STOP_LIMIT:
-                logger.info(f"[텔레그램] {coin} 당일 손절 {self.daily_coin_stops[coin]}회 → 오늘 재매수 금지, 스킵")
                 continue
-
-            # 쿨다운/포지션 체크
-            if coin in self.positions:
-                logger.info(f"[텔레그램] {coin} 이미 보유 중, 스킵")
+            if coin in self.positions or coin in self.pending_signals:
                 continue
             if time.time() <= self.sell_cooldown.get(coin, 0):
-                remaining = self.sell_cooldown[coin] - time.time()
-                logger.info(f"[텔레그램] {coin} 쿨다운 중 (잔여 {remaining:.0f}초), 스킵")
                 continue
-
-            # 최대 포지션 수 체크
             if len(self.positions) >= MAX_CONCURRENT_POSITIONS:
-                logger.info(f"[텔레그램] 최대 포지션 수 도달 ({MAX_CONCURRENT_POSITIONS}개), 스킵")
                 continue
 
-            # 현재가 및 기술적 분석 (모멘텀 스캔 무관하게 직접 분석)
             price = self.api.get_current_price(coin)
-            if not price:
-                logger.info(f"[텔레그램] {coin} 현재가 조회 실패 (빗썸 미상장 가능성)")
-                continue
-
-            # 최소 가격 필터
-            if price < MIN_PRICE_KRW:
-                logger.info(f"[텔레그램] {coin} 가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원, 스킵")
+            if not price or price < MIN_PRICE_KRW:
                 continue
 
             df = self.api.get_ohlcv(coin, interval=BUY_CANDLE_INTERVAL, count=BUY_CANDLE_COUNT)
             if df is None:
-                logger.info(f"[텔레그램] {coin} 캔들 데이터 없음")
                 continue
 
-            # 오더북만 체크 (텔레그램 신호 자체가 빗썸의 분석 결과)
-            orderbook = self.api.get_orderbook(coin)
-            trades = self.api.get_recent_trades(coin, count=100)
-            pressure = self.strategy.check_buy_pressure(orderbook, trades)
-            if not pressure['strong']:
-                logger.info(f"[텔레그램] {coin} 오더북 미통과: {pressure['reason']}")
+            at_signal = self.strategy.check_alpha_trend_signal(coin, df, current_price=price)
+            if at_signal['signal']:
+                logger.info(f"[텔레그램 → pending 등록] {coin} | {at_signal['reason']}")
+                self.pending_signals[coin] = {
+                    'at_value': at_signal['at_value'],
+                    'signal_time': time.time(),
+                }
+            else:
+                logger.info(f"[텔레그램 AT 탈락] {coin} | {at_signal['reason']}")
+
+    # ===== pending 신호 눌림목 체크 =====
+
+    def _check_pending_signals(self):
+        """pending_signals 코인들의 눌림목 반등 진입 조건 체크"""
+        if not self.pending_signals:
+            return
+
+        expired = []
+        to_buy = []
+
+        for coin, pending in list(self.pending_signals.items()):
+            signal_time = pending['signal_time']
+            elapsed_secs = time.time() - signal_time
+            candles_elapsed = int(elapsed_secs / _CANDLE_SECS)
+
+            # 기본 필터 재확인
+            if coin in self.positions:
+                expired.append(coin)
+                continue
+            if len(self.positions) >= MAX_CONCURRENT_POSITIONS:
+                break
+            if time.time() <= self.sell_cooldown.get(coin, 0):
+                logger.debug(f"[pending {coin}] 쿨다운 중 → 스킵")
                 continue
 
-            logger.info(f"[텔레그램 매수] {coin} | {pressure['reason']} -> 매수 실행")
-            self._execute_buy(coin, price, source="telegram")
+            # 타임아웃: PULLBACK_MAX_CANDLES 초과 시 포기
+            if candles_elapsed > PULLBACK_MAX_CANDLES:
+                logger.info(f"[pending 타임아웃] {coin} | {candles_elapsed}캔들 경과 "
+                            f"(최대 {PULLBACK_MAX_CANDLES}캔들) → 신호 폐기")
+                expired.append(coin)
+                continue
 
-    # ===== 신규 매수 탐색 =====
+            df = self.api.get_ohlcv(coin, interval=BUY_CANDLE_INTERVAL, count=BUY_CANDLE_COUNT)
+            if df is None:
+                continue
+
+            entry = self.strategy.check_pullback_entry(coin, df, pending)
+
+            if entry.get('cancel'):
+                logger.info(f"[pending 취소] {coin} | {entry['reason']}")
+                expired.append(coin)
+                continue
+
+            if entry['entry']:
+                # 오더북 매수세 필터
+                orderbook = self.api.get_orderbook(coin)
+                trades = self.api.get_recent_trades(coin, count=100)
+                pressure = self.strategy.check_buy_pressure(orderbook, trades)
+                if pressure['strong']:
+                    to_buy.append((coin, entry))
+                else:
+                    logger.info(f"[pending 오더북 탈락] {coin} | {pressure['reason']}")
+            else:
+                logger.debug(f"[pending 대기] {coin} ({candles_elapsed}/{PULLBACK_MAX_CANDLES}캔들) "
+                             f"| {entry['reason']}")
+
+        for coin in expired:
+            self.pending_signals.pop(coin, None)
+
+        for coin, entry in to_buy:
+            self.pending_signals.pop(coin, None)
+            self._execute_buy(
+                coin,
+                entry['entry_price'],
+                entry['stop_loss_price'],
+                entry['take_profit_price'],
+                source="at_pullback"
+            )
+
+    # ===== 신규 AT 신호 탐색 =====
 
     def _scan_for_entry(self, top_coins: list):
-        """신규 매수 후보 탐색 - 5분봉 사용, 최대 포지션 수 제한"""
-        # 최대 포지션 수 체크
+        """신규 매수 후보 탐색 - AT green 전환 감지 후 pending 등록"""
         if len(self.positions) >= MAX_CONCURRENT_POSITIONS:
             logger.info(f"[매수 탐색] 최대 포지션 수 도달 ({len(self.positions)}/{MAX_CONCURRENT_POSITIONS}개)")
             return
@@ -576,143 +568,112 @@ class AutoTrader:
         candidates = [
             c for c in top_coins
             if c['coin'] not in self.positions
+            and c['coin'] not in self.pending_signals
             and now > self.sell_cooldown.get(c['coin'], 0)
             and c['coin'] not in daily_blocked
+            and c['coin'] not in COIN_BLACKLIST
         ]
-        cooldown_skipped = [c['coin'] for c in top_coins if c['coin'] not in self.positions and now <= self.sell_cooldown.get(c['coin'], 0)]
+
+        cooldown_skipped = [
+            c['coin'] for c in top_coins
+            if c['coin'] not in self.positions and now <= self.sell_cooldown.get(c['coin'], 0)
+        ]
         if cooldown_skipped:
             logger.info(f"[쿨다운 중] {', '.join(cooldown_skipped)}")
         if daily_blocked:
             logger.info(f"[당일 블랙리스트] {', '.join(daily_blocked)}")
+        if self.pending_signals:
+            logger.info(f"[눌림목 대기 중] {', '.join(self.pending_signals.keys())}")
 
-        buy_candidates = []
+        found_signals = []
         for coin_data in candidates:
             coin = coin_data['coin']
             price = coin_data.get('price', 0)
 
-            # 블랙리스트 필터 (스테이블 코인 등)
-            if coin in COIN_BLACKLIST:
-                continue
-
-            # 최소 가격 필터 (API 호출 전에 사전 필터링)
             if price and price < MIN_PRICE_KRW:
-                logger.info(f"[탈락] {coin} | 가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원")
+                logger.debug(f"[탈락] {coin} | 가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원")
                 continue
 
-            # 5분봉 200개 사용
             df = self.api.get_ohlcv(coin, interval=BUY_CANDLE_INTERVAL, count=BUY_CANDLE_COUNT)
             if df is None:
                 continue
 
-            signal = self.strategy.check_buy_signal(coin, df, coin_data['score'],
-                                                     current_price=price)
-
-            if signal['buy']:
-                buy_candidates.append((coin_data, signal))
-                logger.info(f"[매수 후보] {coin} | RSI={signal['rsi']:.1f} | {' | '.join(signal['reasons'])}")
+            signal = self.strategy.check_alpha_trend_signal(coin, df, current_price=price)
+            if signal['signal']:
+                found_signals.append((coin, signal, coin_data))
+                logger.info(f"[AT 신호 감지] {coin} | {signal['reason']}")
             else:
-                logger.info(f"[탈락] {coin} | {', '.join(signal['fail_reasons'])}")
+                logger.debug(f"[탈락] {coin} | {signal['reason']}")
 
-        if not buy_candidates:
-            logger.info("[매수 탐색 완료] 조건 통과 종목 없음")
+        if not found_signals:
+            logger.info("[매수 탐색 완료] AT 신호 없음")
             return
 
-        # RSI 가장 낮은 것 선택 (추가 상승 여력 최대), 우선 종목은 앞으로
-        buy_candidates.sort(key=lambda x: (0 if x[0]['coin'] in PRIORITY_COINS else 1, x[1]['rsi']))
+        # 우선 종목을 앞으로, 그 외 순서 유지
+        found_signals.sort(key=lambda x: 0 if x[0] in PRIORITY_COINS else 1)
 
-        # 오더북/체결 매수세 필터 - 상위 후보부터 통과하는 첫 번째 선택
-        final_coin_data, final_signal = None, None
-        for coin_data, signal in buy_candidates:
-            coin = coin_data['coin']
-            orderbook = self.api.get_orderbook(coin)
-            trades = self.api.get_recent_trades(coin, count=100)
-            pressure = self.strategy.check_buy_pressure(orderbook, trades)
-            if pressure['strong']:
-                logger.info(f"[오더북 통과] {coin} | {pressure['reason']}")
-                final_coin_data, final_signal = coin_data, signal
-                break
-            else:
-                logger.info(f"[오더북 탈락] {coin} | {pressure['reason']}")
-                trade_logger.log_reject(coin, pressure['reason'], coin_data['price'])
+        for coin, signal, coin_data in found_signals:
+            if coin not in self.pending_signals:
+                logger.info(f"[pending 등록] {coin} | {signal['reason']}")
+                self.pending_signals[coin] = {
+                    'at_value': signal['at_value'],
+                    'signal_time': now,
+                }
 
-        if final_coin_data is None:
-            logger.info("[매수 보류] 매수세 강한 후보 없음")
-            return
+    # ===== 매수 실행 =====
 
-        logger.info(f"[최종 선택] {final_coin_data['coin']} | RSI={final_signal['rsi']:.1f}")
-        self._execute_buy(final_coin_data['coin'], final_coin_data['price'], source="momentum")
-
-    def _execute_buy(self, coin: str, price: float, source: str = "momentum"):
-        """매수 실행 - 거래시간/최대포지션/최소가격 체크 포함"""
-
-        # 거래 시간 체크
+    def _execute_buy(self, coin: str, price: float,
+                     stop_loss_price: float, take_profit_price: float,
+                     source: str = "at_pullback"):
+        """매수 실행"""
         if not self._is_trading_hours():
             now_kst = datetime.now(KST)
             logger.info(f"[매수 차단] {coin} | 거래시간 외 ({now_kst.strftime('%H:%M')} KST)")
             return
 
-        # 최소 가격 체크
         if price < MIN_PRICE_KRW:
             logger.info(f"[매수 차단] {coin} | 가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원")
             return
 
-        # 이미 보유 중이면 불타기
         if coin in self.positions:
-            pos = self.positions[coin]
-            if pos.buy_count >= BUY_SPLIT:
-                logger.info(f"[{coin}] 불타기 최대 횟수({BUY_SPLIT}회) 도달")
-                return
-            # 불타기
-            logger.info(f"[불타기] {coin} | {pos.buy_count+1}/{BUY_SPLIT}회차")
-            krw = BUY_UNIT_KRW
-        else:
-            # 최대 포지션 수 체크 (신규 매수만)
-            if len(self.positions) >= MAX_CONCURRENT_POSITIONS:
-                logger.info(f"[매수 차단] {coin} | 최대 포지션 수 도달 ({MAX_CONCURRENT_POSITIONS}개)")
-                return
+            logger.info(f"[매수 차단] {coin} | 이미 보유 중")
+            return
 
-            # 신규 매수
-            krw_balance = self.api.get_krw_balance()
-            if krw_balance < MIN_BUY_KRW:
-                logger.warning(f"[매수 차단] {coin} | 잔고 부족 ({krw_balance:,.0f}원 < 최소 {MIN_BUY_KRW:,}원) - 소액 포지션 방지")
-                return
-            krw = min(BUY_UNIT_KRW, int(krw_balance * 0.995))
-            if krw < BUY_UNIT_KRW:
-                logger.info(f"[신규 매수] {coin} | 1/{BUY_SPLIT}회차 (잔고 맞춤: {krw:,.0f}원)")
-            else:
-                logger.info(f"[신규 매수] {coin} | 1/{BUY_SPLIT}회차")
+        if len(self.positions) >= MAX_CONCURRENT_POSITIONS:
+            logger.info(f"[매수 차단] {coin} | 최대 포지션 수 도달 ({MAX_CONCURRENT_POSITIONS}개)")
+            return
+
+        krw_balance = self.api.get_krw_balance()
+        if krw_balance < MIN_BUY_KRW:
+            logger.warning(f"[매수 차단] {coin} | 잔고 부족 ({krw_balance:,.0f}원 < 최소 {MIN_BUY_KRW:,}원)")
+            return
+
+        krw = min(BUY_UNIT_KRW, int(krw_balance * 0.995))
+        logger.info(f"[매수 실행] {coin} | {krw:,.0f}원 | 손절={stop_loss_price:,.0f} 익절={take_profit_price:,.0f}")
 
         if self.dry_run:
             logger.info(f"[DRY] 매수 생략: {coin} {krw:,.0f}원")
             return
 
-        # 시장가 매수
         result = self.api.buy_market(coin, krw)
         if result:
             quantity = krw / price
-            if coin in self.positions:
-                pos = self.positions[coin]
-                pos.quantity += quantity
-                pos.total_amount += krw
-                pos.buy_count += 1
-                pos.buy_price = pos.total_amount / pos.quantity
-            else:
-                self.positions[coin] = Position(
-                    coin=coin,
-                    buy_price=price,
-                    quantity=quantity,
-                    total_amount=krw
-                )
-            trade_logger.log_trade(coin, "매수", price, quantity, krw, reason="매수신호", source=source)
+            self.positions[coin] = Position(
+                coin=coin,
+                buy_price=price,
+                quantity=quantity,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
+                total_amount=krw,
+            )
+            trade_logger.log_trade(coin, "매수", price, quantity, krw, reason="AT 눌림목 반등", source=source)
             logger.info(f"[매수 완료] {coin} | 가격={price:,.0f} 금액={krw:,.0f}원 [{source}]")
-            buy_count = self.positions[coin].buy_count if coin in self.positions else 1
-            notifier.notify_buy(coin, price, krw, buy_count, BUY_SPLIT, source)
-            self._update_ws_subscriptions()  # 새 포지션 WebSocket 구독 추가
+            notifier.notify_buy(coin, price, krw, 1, 1, source)
+            self._update_ws_subscriptions()
 
     # ===== 상태 조회 =====
 
     def get_status(self) -> str:
-        """현재 상태 요약"""
         lines = [f"\n{'='*40}", "현재 포지션"]
         if not self.positions:
             lines.append("  없음")
@@ -720,10 +681,17 @@ class AutoTrader:
             for coin, pos in self.positions.items():
                 price = self.api.get_current_price(coin) or pos.buy_price
                 pnl = (price - pos.buy_price) / pos.buy_price * 100
+                stop_str = f"{pos.stop_loss_price:,.0f}" if pos.stop_loss_price > 0 else "미설정"
+                take_str = f"{pos.take_profit_price:,.0f}" if pos.take_profit_price > 0 else "미설정"
                 lines.append(
                     f"  {coin}: 매수={pos.buy_price:,.0f} 현재={price:,.0f} "
-                    f"손익={pnl:+.1f}% | {pos.buy_count}/{BUY_SPLIT}회"
+                    f"손익={pnl:+.1f}% | 손절={stop_str} 익절={take_str}"
                 )
+        if self.pending_signals:
+            lines.append("눌림목 대기:")
+            for coin, sig in self.pending_signals.items():
+                elapsed = int((time.time() - sig['signal_time']) / _CANDLE_SECS)
+                lines.append(f"  {coin}: {elapsed}/{PULLBACK_MAX_CANDLES}캔들 경과")
         lines.append(f"포지션 수: {len(self.positions)}/{MAX_CONCURRENT_POSITIONS}")
         now_kst = datetime.now(KST)
         trading = "O" if self._is_trading_hours() else "X"

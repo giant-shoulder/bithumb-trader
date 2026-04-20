@@ -36,8 +36,8 @@ def main():
     tg_monitor.start()
 
     logger.info("자동매매 시작. 중단하려면 Ctrl+C")
-    from config import MAX_POSITION_KRW, BUY_SPLIT
-    logger.info(f"설정: 종목당 최대 {MAX_POSITION_KRW:,}원 | 분할매수 {BUY_SPLIT}회")
+    from config import MAX_POSITION_KRW, BUY_UNIT_KRW
+    logger.info(f"설정: 종목당 최대 {MAX_POSITION_KRW:,}원 | 1회 매수 {BUY_UNIT_KRW:,}원")
 
     try:
         trader.run()

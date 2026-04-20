@@ -1,177 +1,276 @@
 """
-Claude 단타 전략 - 코인 버전
-핵심: 거래대금 1등 + 정배열 + 장대양봉 돌파 매수
-손절/익절: 고정값 기반 단순 로직
+AlphaTrend 기반 리듬 단타 전략 (제이슨 노아 방법론)
+3단계: 확인(AT green 전환) → 반응(눌림목 대기) → 진입(반등 양봉)
+
+손익비 R:R 1:1.5
+- 손절: 눌림목 캔들 저점 (클리핑 0.5%~2.5%)
+- 익절: 진입가 + 리스크 * 1.5
 """
-import pandas as pd
 import numpy as np
+import pandas as pd
 from config import (
-    MA_SHORT, MA_MID1, MA_MID2, MA_LONG,
-    RSI_BUY_MIN, RSI_BUY_MAX,
-    BULLISH_CANDLE_MIN, PREV_HIGH_PERIOD,
+    MA_MID1, MA_MID2,
     MIN_PRICE_KRW,
-    HARD_STOP_PCT,
-    TRAILING_ACTIVATE_PCT, TRAILING_TIERS,
-    HARD_TAKE_PROFIT_PCT,
+    AT_PERIOD, AT_MULTIPLIER,
+    STOP_LOSS_MIN_PCT, STOP_LOSS_MAX_PCT,
+    RR_RATIO,
+    RSI_PERIOD,
     MOMENTUM_KILL_RANK,
-    MIN_PROFIT_FOR_SELL,
-    RSI_PERIOD, RSI_OVERBOUGHT,
-    BB_PERIOD, BB_STD,
 )
 from logger import get_logger
 
 logger = get_logger()
 
 
-class ClaudeStrategy:
-    """Claude 단타 전략"""
+class AlphaTrendStrategy:
+    """제이슨 노아 리듬 단타 - AlphaTrend 기반"""
 
-    # ===== 이동평균 =====
+    # ===== AlphaTrend 계산 =====
 
-    def calc_ma(self, df: pd.DataFrame, period: int) -> pd.Series:
-        """이동평균 계산"""
-        return df['close'].rolling(window=period).mean()
-
-    def is_bullish_alignment(self, df: pd.DataFrame) -> bool:
-        """정배열 확인: MA5 > MA20 > MA60 > MA120
-        코인 특성상 MA120이 없을 수 있으므로 MA5 > MA20 > MA60 기준
-        """
-        if len(df) < MA_LONG:
-            # 데이터 부족 시 단기 정배열만 확인
-            if len(df) < MA_MID2:
-                return False
-            ma5 = self.calc_ma(df, MA_SHORT).iloc[-1]
-            ma20 = self.calc_ma(df, MA_MID1).iloc[-1]
-            ma60 = self.calc_ma(df, MA_MID2).iloc[-1]
-            result = ma5 > ma20 > ma60
-        else:
-            ma5 = self.calc_ma(df, MA_SHORT).iloc[-1]
-            ma20 = self.calc_ma(df, MA_MID1).iloc[-1]
-            ma60 = self.calc_ma(df, MA_MID2).iloc[-1]
-            ma120 = self.calc_ma(df, MA_LONG).iloc[-1]
-            result = ma5 > ma20 > ma60 > ma120
-
-        logger.debug(f"정배열: {result} | MA5={ma5:.0f} MA20={ma20:.0f} MA60={ma60:.0f}")
-        return result
-
-    # ===== 장대양봉 =====
-
-    def is_bullish_candle(self, df: pd.DataFrame) -> bool:
-        """장대양봉 확인: 시가 대비 종가 상승폭이 기준 이상"""
-        last = df.iloc[-1]
-        open_price = last['open']
-        close_price = last['close']
-        if open_price <= 0:
-            return False
-        candle_rise = (close_price - open_price) / open_price * 100
-        result = candle_rise >= BULLISH_CANDLE_MIN
-        logger.debug(f"장대양봉: {result} | 캔들 상승률={candle_rise:.2f}%")
-        return result
-
-    # ===== 전고점 돌파 =====
-
-    def is_breaking_high(self, df: pd.DataFrame) -> bool:
-        """6개월(120캔들) 내 전고점 돌파 여부"""
-        if len(df) < 2:
-            return False
-        period = min(PREV_HIGH_PERIOD, len(df) - 1)
-        prev_high = df['high'].iloc[-period:-1].max()
-        current_close = df['close'].iloc[-1]
-        result = current_close >= prev_high
-        logger.debug(f"전고점 돌파: {result} | 현재={current_close:.0f} 전고점={prev_high:.0f}")
-        return result
-
-    # ===== 거래대금 급증 =====
-
-    def is_volume_surge(self, df: pd.DataFrame, multiplier: float = 2.0) -> bool:
-        """거래대금 급증 확인: 평균 대비 N배 이상"""
-        if len(df) < 20:
-            return False
-        avg_volume = df['volume'].iloc[-20:-1].mean()
-        current_volume = df['volume'].iloc[-1]
-        result = current_volume >= avg_volume * multiplier
-        logger.debug(f"거래대금 급증: {result} | 현재={current_volume:.0f} 평균={avg_volume:.0f}")
-        return result
-
-    # ===== 지지/저항 =====
-
-    def get_resistance_levels(self, df: pd.DataFrame, current_price: float) -> list:
-        """저항선 계산: 전고점, 라운드넘버"""
-        levels = []
-
-        # 전고점들
-        highs = df['high'].iloc[-PREV_HIGH_PERIOD:].values
-        for h in sorted(set([round(x, -int(np.log10(x))-1+3) for x in highs if x > current_price]))[:3]:
-            levels.append(h)
-
-        # 라운드넘버 (10의 배수)
-        magnitude = 10 ** int(np.log10(current_price))
-        for i in range(1, 5):
-            round_num = (int(current_price / magnitude) + i) * magnitude
-            levels.append(round_num)
-
-        levels = sorted(set([l for l in levels if l > current_price]))
-        return levels[:3]
-
-    def get_support_levels(self, df: pd.DataFrame, current_price: float) -> list:
-        """지지선 계산: 이동평균선"""
-        supports = []
-        for period in [MA_SHORT, MA_MID1, MA_MID2]:
-            if len(df) >= period:
-                ma = self.calc_ma(df, period).iloc[-1]
-                if ma < current_price:
-                    supports.append(ma)
-        return sorted(supports, reverse=True)
-
-    # ===== 기술 지표 =====
-
-    def calc_rsi(self, df: pd.DataFrame) -> float:
-        """RSI 계산"""
+    def _calc_rsi_series(self, df: pd.DataFrame, period: int = None) -> pd.Series:
+        """RSI 시리즈 반환 (AT 내부용)"""
+        if period is None:
+            period = RSI_PERIOD
         delta = df['close'].diff()
-        gain = delta.clip(lower=0).rolling(window=RSI_PERIOD).mean()
-        loss = (-delta.clip(upper=0)).rolling(window=RSI_PERIOD).mean()
-        rs = gain / loss.replace(0, float('nan'))
-        rsi = 100 - (100 / (1 + rs))
-        return rsi.iloc[-1], rsi.iloc[-2]
+        gain = delta.clip(lower=0).rolling(window=period).mean()
+        loss = (-delta.clip(upper=0)).rolling(window=period).mean()
+        rs = gain / loss.replace(0, np.nan)
+        return 100 - (100 / (1 + rs))
 
-    def calc_bollinger_bands(self, df: pd.DataFrame) -> tuple:
-        """볼린저 밴드 계산 (upper, mid, lower)"""
-        ma = df['close'].rolling(window=BB_PERIOD).mean()
-        std = df['close'].rolling(window=BB_PERIOD).std()
-        return (ma + BB_STD * std).iloc[-1], ma.iloc[-1], (ma - BB_STD * std).iloc[-1]
+    def calc_alpha_trend(self, df: pd.DataFrame,
+                          period: int = None,
+                          multiplier: float = None) -> pd.DataFrame:
+        """AlphaTrend 지표 계산
 
-    def calc_macd(self, df: pd.DataFrame) -> tuple:
-        """MACD 계산 (macd_cur, signal_cur, macd_prev, signal_prev)"""
-        exp12 = df['close'].ewm(span=12, adjust=False).mean()
-        exp26 = df['close'].ewm(span=26, adjust=False).mean()
-        macd = exp12 - exp26
-        signal = macd.ewm(span=9, adjust=False).mean()
-        return macd.iloc[-1], signal.iloc[-1], macd.iloc[-2], signal.iloc[-2]
+        - RSI >= 50: AT = max(low - ATR*mult, AT_prev)  → 지지선 (상승 추세)
+        - RSI <  50: AT = min(high + ATR*mult, AT_prev) → 저항선 (하락 추세)
 
-    # ===== 기술 지표 기반 매도 보조 (df 필요, 일반 매도에만 사용) =====
+        Color:
+          - green:  AT[i] > AT[i-1]
+          - red:    AT[i] < AT[i-1]
+          - yellow: AT[i] == AT[i-1] (횡보/노이즈)
 
-    def should_sell_rsi(self, df: pd.DataFrame) -> bool:
-        """RSI 과매수 반전: RSI가 과매수 구간에서 하락 전환"""
-        rsi_cur, rsi_prev = self.calc_rsi(df)
-        return rsi_prev >= RSI_OVERBOUGHT and rsi_cur < rsi_prev
+        Returns: df에 'at_value', 'at_color' 컬럼 추가한 DataFrame
+        """
+        if period is None:
+            period = AT_PERIOD
+        if multiplier is None:
+            multiplier = AT_MULTIPLIER
 
-    def should_sell_bb(self, df: pd.DataFrame, current_price: float) -> bool:
-        """볼린저 밴드 상단 터치"""
-        upper, _, _ = self.calc_bollinger_bands(df)
-        return current_price >= upper
+        # ATR (EMA of True Range)
+        prev_close = df['close'].shift(1)
+        tr = pd.concat([
+            df['high'] - df['low'],
+            (df['high'] - prev_close).abs(),
+            (df['low'] - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        atr = tr.ewm(span=period, adjust=False).mean()
+        rsi = self._calc_rsi_series(df, period)
 
-    def should_sell_macd(self, df: pd.DataFrame) -> bool:
-        """MACD 데드크로스: MACD가 시그널 아래로 교차"""
-        macd_cur, signal_cur, macd_prev, signal_prev = self.calc_macd(df)
-        return macd_prev >= signal_prev and macd_cur < signal_cur
+        at_arr = np.full(len(df), np.nan)
 
-    # ===== 오더북 매수세 분석 =====
+        for i in range(len(df)):
+            if i < period or pd.isna(rsi.iloc[i]) or pd.isna(atr.iloc[i]):
+                continue
+            prev_at = at_arr[i - 1] if (i > 0 and not np.isnan(at_arr[i - 1])) else df['close'].iloc[i]
+            cur_atr = atr.iloc[i] * multiplier
+            if rsi.iloc[i] >= 50:
+                at_arr[i] = max(df['low'].iloc[i] - cur_atr, prev_at)
+            else:
+                at_arr[i] = min(df['high'].iloc[i] + cur_atr, prev_at)
+
+        # Color 결정
+        at_colors = ['yellow'] * len(df)
+        for i in range(1, len(df)):
+            if np.isnan(at_arr[i]) or np.isnan(at_arr[i - 1]):
+                at_colors[i] = 'yellow'
+            elif at_arr[i] > at_arr[i - 1]:
+                at_colors[i] = 'green'
+            elif at_arr[i] < at_arr[i - 1]:
+                at_colors[i] = 'red'
+            else:
+                at_colors[i] = 'yellow'
+
+        result = df.copy()
+        result['at_value'] = at_arr
+        result['at_color'] = at_colors
+        return result
+
+    # ===== 1단계: 확인 (AT green 전환 감지) =====
+
+    def check_alpha_trend_signal(self, coin: str, df: pd.DataFrame,
+                                  current_price: float = None) -> dict:
+        """AT green 전환 감지 - 확인 단계
+
+        조건:
+        1. 직전 캔들 AT non-green → 현재 캔들 AT green 전환
+        2. MA20 > MA60 (중기 상승 추세)
+        3. 현재가 > AT 값
+        4. 최소 가격 필터
+        """
+        result = {'signal': False, 'reason': '', 'at_value': 0.0}
+        price = current_price if current_price else df['close'].iloc[-1]
+
+        if price < MIN_PRICE_KRW:
+            result['reason'] = f'가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원'
+            return result
+
+        min_len = max(MA_MID2, AT_PERIOD + 2)
+        if len(df) < min_len:
+            result['reason'] = '데이터 부족'
+            return result
+
+        at_df = self.calc_alpha_trend(df)
+        cur_color = at_df['at_color'].iloc[-1]
+        prev_color = at_df['at_color'].iloc[-2]
+        cur_at = at_df['at_value'].iloc[-1]
+
+        if np.isnan(cur_at):
+            result['reason'] = 'AT 계산 불가'
+            return result
+
+        # AT green 전환 확인
+        if not (cur_color == 'green' and prev_color != 'green'):
+            result['reason'] = f'AT green 전환 없음 ({prev_color}→{cur_color})'
+            return result
+
+        # MA20 > MA60 (중기 상승 추세 필터)
+        ma20 = df['close'].rolling(MA_MID1).mean().iloc[-1]
+        ma60 = df['close'].rolling(MA_MID2).mean().iloc[-1]
+        if ma20 <= ma60:
+            result['reason'] = f'MA20({ma20:.0f}) <= MA60({ma60:.0f})'
+            return result
+
+        # 현재가 > AT
+        if price <= cur_at:
+            result['reason'] = f'가격({price:.0f}) <= AT({cur_at:.0f})'
+            return result
+
+        result['signal'] = True
+        result['at_value'] = cur_at
+        result['reason'] = (f'AT green 전환 | MA20={ma20:.0f}>MA60={ma60:.0f} | AT={cur_at:.0f}')
+        logger.info(f"[AT 신호] {coin} | {result['reason']}")
+        return result
+
+    # ===== 2~3단계: 반응 + 진입 (눌림목 + 반등) =====
+
+    def check_pullback_entry(self, coin: str, df: pd.DataFrame,
+                              pending_signal: dict) -> dict:
+        """눌림목 반등 진입 판단
+
+        조건:
+        1. AT 여전히 green (yellow/red면 신호 취소)
+        2. 직전 캔들 음봉 (눌림목)
+        3. 현재 캔들 양봉 (반등 확인)
+        4. 현재가 > AT 값
+        5. 손절 = 직전 음봉 저점 (클리핑 STOP_LOSS_MIN_PCT~STOP_LOSS_MAX_PCT)
+        6. 익절 = 진입가 + 리스크 * RR_RATIO
+        """
+        result = {'entry': False, 'reason': '', 'cancel': False}
+
+        at_df = self.calc_alpha_trend(df)
+        cur_color = at_df['at_color'].iloc[-1]
+        cur_at = at_df['at_value'].iloc[-1]
+
+        # AT가 green이 아니면 신호 취소
+        if cur_color != 'green':
+            result['cancel'] = True
+            result['reason'] = f'AT {cur_color} - 신호 취소'
+            return result
+
+        last = df.iloc[-1]  # 현재 캔들
+        prev = df.iloc[-2]  # 직전 캔들 (눌림목 후보)
+
+        # 현재 캔들 양봉 (반등 확인)
+        if last['close'] <= last['open']:
+            result['reason'] = '현재 음봉 (반등 미확인)'
+            return result
+
+        # 직전 캔들 음봉 (눌림목)
+        if prev['close'] >= prev['open']:
+            result['reason'] = '직전 양봉 (눌림목 없음)'
+            return result
+
+        entry_price = last['close']
+
+        # 현재가 > AT
+        if entry_price <= cur_at:
+            result['reason'] = f'가격({entry_price:.0f}) <= AT({cur_at:.0f})'
+            return result
+
+        # 손절가 계산 (눌림목 저점 기반, 클리핑)
+        pullback_low = prev['low']
+        raw_stop_pct = (entry_price - pullback_low) / entry_price * 100
+        stop_pct = max(STOP_LOSS_MIN_PCT, min(STOP_LOSS_MAX_PCT, raw_stop_pct))
+        stop_loss_price = entry_price * (1 - stop_pct / 100)
+
+        # 익절가 계산 (R:R = 1:RR_RATIO)
+        risk = entry_price - stop_loss_price
+        take_profit_price = entry_price + risk * RR_RATIO
+        target_pct = risk * RR_RATIO / entry_price * 100
+
+        result.update({
+            'entry': True,
+            'entry_price': entry_price,
+            'stop_loss_price': stop_loss_price,
+            'take_profit_price': take_profit_price,
+            'stop_pct': stop_pct,
+            'target_pct': target_pct,
+            'reason': (f'눌림목 반등 진입 | '
+                       f'손절={stop_loss_price:.0f}(-{stop_pct:.1f}%) '
+                       f'익절={take_profit_price:.0f}(+{target_pct:.1f}%)'),
+        })
+        logger.info(f"[눌림목 진입] {coin} | {result['reason']}")
+        return result
+
+    # ===== 노이즈 청산 =====
+
+    def check_at_noise_exit(self, coin: str, df: pd.DataFrame) -> bool:
+        """AT yellow 구간 진입 시 즉시 청산 신호 (AT_NOISE_EXIT=True 시 사용)"""
+        at_df = self.calc_alpha_trend(df)
+        cur_color = at_df['at_color'].iloc[-1]
+        if cur_color == 'yellow':
+            logger.info(f"[AT 노이즈 청산] {coin} | AT yellow 전환 → 즉시 청산")
+            return True
+        return False
+
+    # ===== WebSocket 실시간 손절/익절 =====
+
+    def check_at_stop_take(self, coin: str, current_price: float,
+                            stop_loss_price: float, take_profit_price: float) -> dict:
+        """절대 가격 기반 손절/익절 판단 (WebSocket 틱 콜백용)
+
+        stop_loss_price / take_profit_price 가 0이면 해당 체크 스킵
+        """
+        result = {'sell': False, 'reason': '', 'is_stop_loss': False}
+
+        if stop_loss_price > 0 and current_price <= stop_loss_price:
+            result['sell'] = True
+            result['is_stop_loss'] = True
+            result['reason'] = f'손절: {current_price:,.0f}원 <= {stop_loss_price:,.0f}원'
+        elif take_profit_price > 0 and current_price >= take_profit_price:
+            result['sell'] = True
+            result['is_stop_loss'] = False
+            result['reason'] = f'익절: {current_price:,.0f}원 >= {take_profit_price:,.0f}원'
+
+        return result
+
+    # ===== 모멘텀 소멸 체크 =====
+
+    def check_momentum_exit(self, coin: str, volume_rank: int) -> dict:
+        """거래대금 순위 이탈로 인한 모멘텀 소멸 매도"""
+        result = {'sell': False, 'reason': '', 'is_stop_loss': False}
+        if volume_rank > MOMENTUM_KILL_RANK:
+            result['sell'] = True
+            result['reason'] = f'모멘텀 소멸: 거래대금 {volume_rank}위 (기준 {MOMENTUM_KILL_RANK}위)'
+        return result
+
+    # ===== 오더북 매수세 (진입 필터) =====
 
     def check_buy_pressure(self, orderbook: dict, trades: list) -> dict:
         """호가 및 체결 기반 매수세 분석"""
         result = {'strong': False, 'bid_ratio': 0.0, 'trade_ratio': 0.0, 'reason': ''}
 
-        # 1. 호가 비율 (매수잔량 / 매도잔량)
         if orderbook:
             units = orderbook.get('orderbook_units', [])
             total_bid = sum(float(u.get('bid_size', 0)) * float(u.get('bid_price', 0)) for u in units)
@@ -181,7 +280,6 @@ class ClaudeStrategy:
         else:
             bid_ratio = 0
 
-        # 2. 최근 체결 비율 (매수 체결 / 전체 체결)
         if trades:
             buy_count = sum(1 for t in trades if t.get('ask_bid') == 'BID')
             trade_ratio = buy_count / len(trades)
@@ -189,229 +287,18 @@ class ClaudeStrategy:
         else:
             trade_ratio = 0
 
-        # 판단: 둘 다 충족해야 매수 (AND), 기준은 완화
-        bid_ok = bid_ratio >= 1.2      # 매수잔량이 매도잔량의 1.2배 이상 (1.05→1.3→1.1→1.2)
-        trade_ok = trade_ratio >= 0.60  # 최근 체결 60% 이상이 매수 (58→62→60, ETH 60% 탈락 완화)
+        bid_ok = bid_ratio >= 1.2
+        trade_ok = trade_ratio >= 0.60
 
         if bid_ok and trade_ok:
             result['strong'] = True
-            result['reason'] = f"매수세 강함 (호가비율={bid_ratio:.2f}, 체결비율={trade_ratio:.0%})"
+            result['reason'] = f'매수세 강함 (호가비율={bid_ratio:.2f}, 체결비율={trade_ratio:.0%})'
         else:
             reasons = []
             if not bid_ok:
-                reasons.append(f"호가비율 약함({bid_ratio:.2f}<1.2)")
+                reasons.append(f'호가비율 약함({bid_ratio:.2f}<1.2)')
             if not trade_ok:
-                reasons.append(f"체결비율 약함({trade_ratio:.0%}<60%)")
+                reasons.append(f'체결비율 약함({trade_ratio:.0%}<60%)')
             result['reason'] = ', '.join(reasons)
-
-        return result
-
-    # ===== 종합 매수 신호 =====
-
-    def check_buy_signal(self, coin: str, df: pd.DataFrame, momentum_score: float,
-                         current_price: float = None) -> dict:
-        """매수 신호 종합 판단 - "지금 오르는 중" 특화
-
-        필수 조건 (모두 충족):
-          0. 최소 가격 필터
-          1. MA5 > MA20 (단기 상승 추세)
-          2. RSI 40~65 AND RSI 상승 중 (rsi_cur > rsi_prev)
-          3. 가격 > BB 중간선
-          4. 거래량 급증 (현재 캔들 >= 최근 10캔들 평균 1.5배) ← 보너스→필수
-          5. MACD > signal (상승 모멘텀 진행 중)
-          6. 현재 캔들 양봉 (close > open)
-
-        가산 조건 (보너스):
-          7. 전고점 돌파
-          8. 정배열 (MA5 > MA20 > MA60)
-        """
-        result = {
-            'coin': coin,
-            'buy': False,
-            'rsi': 0.0,
-            'reasons': [],
-            'fail_reasons': []
-        }
-
-        if len(df) < BB_PERIOD:
-            result['fail_reasons'].append("데이터 부족")
-            return result
-
-        # 현재가 결정
-        price = current_price if current_price else df['close'].iloc[-1]
-
-        # 0. 최소 가격 필터 (저가 코인 제외)
-        if price < MIN_PRICE_KRW:
-            result['fail_reasons'].append(f"가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원")
-            return result
-
-        ma5 = self.calc_ma(df, MA_SHORT).iloc[-1]
-        ma20 = self.calc_ma(df, MA_MID1).iloc[-1]
-        rsi_cur, rsi_prev = self.calc_rsi(df)
-        _, bb_mid, _ = self.calc_bollinger_bands(df)
-        macd_cur, signal_cur, _, _ = self.calc_macd(df)
-
-        # RSI NaN 체크 (스테이블 코인 등 변동 없는 경우)
-        if pd.isna(rsi_cur):
-            result['fail_reasons'].append("RSI 계산 불가")
-            return result
-
-        result['rsi'] = rsi_cur
-
-        # 1. MA5 > MA20 > MA60 (필수 - 단기+중기 정배열)
-        ma60 = self.calc_ma(df, MA_MID2).iloc[-1] if len(df) >= MA_MID2 else None
-        if ma5 <= ma20:
-            result['fail_reasons'].append(f"MA5({ma5:.0f}) <= MA20({ma20:.0f})")
-            return result
-        if ma60 is not None and ma20 <= ma60:
-            result['fail_reasons'].append(f"MA20({ma20:.0f}) <= MA60({ma60:.0f}) - 중기 하락추세")
-            return result
-        result['reasons'].append("MA5 > MA20 > MA60")
-
-        # 2. RSI 매수 구간 AND 상승 중 (필수)
-        if not (RSI_BUY_MIN <= rsi_cur <= RSI_BUY_MAX):
-            result['fail_reasons'].append(f"RSI {rsi_cur:.1f} (기준: {RSI_BUY_MIN}~{RSI_BUY_MAX})")
-            return result
-        if pd.notna(rsi_prev) and rsi_cur <= rsi_prev:
-            result['fail_reasons'].append(f"RSI 하락 중 ({rsi_cur:.1f} <= {rsi_prev:.1f})")
-            return result
-        result['reasons'].append(f"RSI {rsi_cur:.1f}↑")
-
-        # 3. 가격 > BB 중간선 (필수)
-        if price <= bb_mid:
-            result['fail_reasons'].append(f"가격({price:.0f}) <= BB중간({bb_mid:.0f})")
-            return result
-        result['reasons'].append("BB 중간선 위")
-
-        # 4. 거래량 급증 (필수) - 현재 캔들 거래량이 최근 10캔들 평균의 2.0배 이상
-        if len(df) >= 12:
-            avg_vol = df['volume'].iloc[-11:-1].mean()
-            cur_vol = df['volume'].iloc[-1]
-            if avg_vol > 0 and cur_vol < avg_vol * 2.0:
-                result['fail_reasons'].append(f"거래량 부족 ({cur_vol/avg_vol:.1f}x < 2.0x)")
-                return result
-            vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1.0
-            result['reasons'].append(f"거래량 {vol_ratio:.1f}x")
-
-        # 5. MACD > signal (상승 모멘텀 필수)
-        if pd.notna(macd_cur) and pd.notna(signal_cur) and macd_cur <= signal_cur:
-            result['fail_reasons'].append(f"MACD 하락 ({macd_cur:.4f} <= {signal_cur:.4f})")
-            return result
-        result['reasons'].append("MACD 상승")
-
-        # 6. 현재 캔들 양봉 (필수)
-        last_open = df['open'].iloc[-1]
-        last_close = df['close'].iloc[-1]
-        if last_close <= last_open:
-            result['fail_reasons'].append(f"음봉 (종가{last_close:.0f} <= 시가{last_open:.0f})")
-            return result
-        result['reasons'].append("양봉")
-
-        # 7. 전고점 돌파 (보너스)
-        if self.is_breaking_high(df):
-            result['reasons'].append("전고점 돌파")
-
-        # 8. 장기 정배열 (보너스) - MA60 > MA120
-        if self.is_bullish_alignment(df):
-            result['reasons'].append("장기정배열")
-
-        result['buy'] = True
-        return result
-
-    # ===== 매도 신호 (하드 손절/익절 - df 불필요) =====
-
-    def check_hard_stop(self, coin: str, buy_price: float, current_price: float) -> dict:
-        """하드 손절/익절 판단 - 현재가만으로 즉시 판단, MIN_HOLD_SECONDS 무관
-
-        - 하드 손절: -1.2% (항상 즉시)
-        - 하드 익절: +4% (항상 즉시)
-        """
-        result = {
-            'coin': coin,
-            'sell': False,
-            'reason': '',
-            'is_stop_loss': False,
-        }
-
-        pct = (current_price - buy_price) / buy_price * 100
-
-        # 하드 손절 (-1.2%)
-        if pct <= -HARD_STOP_PCT:
-            result['sell'] = True
-            result['is_stop_loss'] = True
-            result['reason'] = f"하드 손절: {pct:.2f}% (기준: -{HARD_STOP_PCT}%)"
-            return result
-
-        # 하드 익절 (+4%)
-        if pct >= HARD_TAKE_PROFIT_PCT:
-            result['sell'] = True
-            result['is_stop_loss'] = False
-            result['reason'] = f"하드 익절: {pct:.2f}% (기준: +{HARD_TAKE_PROFIT_PCT}%)"
-            return result
-
-        return result
-
-    def check_trailing_stop(self, coin: str, buy_price: float, current_price: float,
-                            highest_price: float) -> dict:
-        """티어드 트레일링 스탑 - MIN_HOLD_SECONDS 무관, 항상 즉시 체크"""
-        result = {'coin': coin, 'sell': False, 'reason': '', 'is_stop_loss': False}
-
-        if highest_price is None or highest_price <= buy_price:
-            return result
-
-        pct = (current_price - buy_price) / buy_price * 100
-        if pct < TRAILING_ACTIVATE_PCT:
-            return result
-
-        drop_from_high = (highest_price - current_price) / highest_price * 100
-        high_pct = (highest_price - buy_price) / buy_price * 100
-        trail_pct = TRAILING_TIERS[-1][1]
-        for threshold, width in TRAILING_TIERS:
-            if high_pct >= threshold:
-                trail_pct = width
-                break
-
-        if drop_from_high >= trail_pct:
-            result['sell'] = True
-            result['reason'] = (f"트레일링 스탑: 고점 대비 -{drop_from_high:.2f}% "
-                                f"(수익 {pct:+.2f}%, 허용폭 -{trail_pct}%)")
-        return result
-
-    def check_sell_signal(self, coin: str, buy_price: float, current_price: float,
-                          volume_rank: int, highest_price: float = None,
-                          df: pd.DataFrame = None) -> dict:
-        """일반 매도 신호 - MIN_HOLD_SECONDS 경과 후에만 호출 (RSI/MACD/BB/모멘텀)"""
-        result = {
-            'coin': coin,
-            'sell': False,
-            'reason': '',
-            'is_stop_loss': False,
-        }
-
-        pct = (current_price - buy_price) / buy_price * 100
-
-        # 모멘텀 소멸: 순위 40위 밖 (익절 쿨다운 적용 - 같은 코인 재매수 허용)
-        if volume_rank > MOMENTUM_KILL_RANK:
-            result['sell'] = True
-            result['is_stop_loss'] = False
-            result['reason'] = f"모멘텀 소멸: 거래대금 {volume_rank}위 (기준: {MOMENTUM_KILL_RANK}위)"
-            return result
-
-        # df가 있으면 기술 지표 기반 매도 체크 (최소 수익 MIN_PROFIT_FOR_SELL 이상일 때만)
-        if df is not None and pct >= MIN_PROFIT_FOR_SELL:
-            if self.should_sell_rsi(df):
-                result['sell'] = True
-                result['reason'] = f"RSI 과매수 반전 (수익 {pct:+.2f}%)"
-                return result
-
-            if self.should_sell_bb(df, current_price):
-                result['sell'] = True
-                result['reason'] = f"BB 상단 도달 (수익 {pct:+.2f}%)"
-                return result
-
-            if self.should_sell_macd(df):
-                result['sell'] = True
-                result['reason'] = f"MACD 데드크로스 (수익 {pct:+.2f}%)"
-                return result
 
         return result
