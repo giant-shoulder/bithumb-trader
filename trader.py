@@ -284,20 +284,13 @@ class AutoTrader:
             if df is None:
                 continue
 
-            signal = self.strategy.check_alpha_trend_signal(coin, df, current_price=price)
+            signal = self.strategy.check_rhythm_entry(coin, df, current_price=price)
             if signal['signal']:
-                # 오더북 매수세 확인
-                orderbook = self.api.get_orderbook(coin)
-                trades = self.api.get_recent_trades(coin, count=100)
-                pressure = self.strategy.check_buy_pressure(orderbook, trades)
-                if pressure['strong']:
-                    logger.info(f"[WS 급등 즉시 매수] {coin} | {signal['reason']}")
-                    self._execute_buy(coin, price, signal['stop_loss_price'],
-                                      signal['take_profit_price'], source="ws_surge")
-                else:
-                    logger.info(f"[WS 급등 오더북 탈락] {coin} | {pressure['reason']}")
+                logger.info(f"[WS 급등 리듬 매수] {coin} | {signal['reason']}")
+                self._execute_buy(coin, price, signal['stop_loss_price'],
+                                  signal['take_profit_price'], source="ws_surge")
             else:
-                logger.info(f"[WS 급등 AT 탈락] {coin} | {signal['reason']}")
+                logger.info(f"[WS 급등 탈락] {coin} | {signal['reason']}")
 
     # ===== 일일 손실 한도 =====
 
@@ -475,19 +468,13 @@ class AutoTrader:
             if df is None:
                 continue
 
-            at_signal = self.strategy.check_alpha_trend_signal(coin, df, current_price=price)
-            if at_signal['signal']:
-                orderbook = self.api.get_orderbook(coin)
-                trades = self.api.get_recent_trades(coin, count=100)
-                pressure = self.strategy.check_buy_pressure(orderbook, trades)
-                if pressure['strong']:
-                    logger.info(f"[텔레그램 즉시 매수] {coin} | {at_signal['reason']}")
-                    self._execute_buy(coin, price, at_signal['stop_loss_price'],
-                                      at_signal['take_profit_price'], source="telegram")
-                else:
-                    logger.info(f"[텔레그램 오더북 탈락] {coin} | {pressure['reason']}")
+            signal = self.strategy.check_rhythm_entry(coin, df, current_price=price)
+            if signal['signal']:
+                logger.info(f"[텔레그램 리듬 매수] {coin} | {signal['reason']}")
+                self._execute_buy(coin, price, signal['stop_loss_price'],
+                                  signal['take_profit_price'], source="telegram")
             else:
-                logger.info(f"[텔레그램 AT 탈락] {coin} | {at_signal['reason']}")
+                logger.info(f"[텔레그램 탈락] {coin} | {signal['reason']}")
 
     # ===== 신규 AT 신호 탐색 =====
 
@@ -529,35 +516,28 @@ class AutoTrader:
             if df is None:
                 continue
 
-            signal = self.strategy.check_alpha_trend_signal(coin, df, current_price=price)
+            signal = self.strategy.check_rhythm_entry(coin, df, current_price=price)
             if signal['signal']:
                 buy_candidates.append((coin, signal, coin_data))
-                logger.info(f"[AT 신호] {coin} | {signal['reason']}")
+                logger.info(f"[리듬 신호] {coin} | {signal['reason']}")
             else:
                 logger.debug(f"[탈락] {coin} | {signal['reason']}")
 
         if not buy_candidates:
-            logger.info("[매수 탐색 완료] AT 신호 없음")
+            logger.info("[매수 탐색 완료] 리듬 진입 신호 없음")
             return
 
-        # 우선 종목을 앞으로
+        # 우선 종목을 앞으로, 그 외는 순서 유지
         buy_candidates.sort(key=lambda x: 0 if x[0] in PRIORITY_COINS else 1)
 
-        # 오더북 통과하는 첫 번째 종목 즉시 매수
+        # 신호 통과한 종목 즉시 매수
         for coin, signal, coin_data in buy_candidates:
             if len(self.positions) >= MAX_CONCURRENT_POSITIONS:
                 break
             if coin in self.positions:
                 continue
-            orderbook = self.api.get_orderbook(coin)
-            trades = self.api.get_recent_trades(coin, count=100)
-            pressure = self.strategy.check_buy_pressure(orderbook, trades)
-            if pressure['strong']:
-                logger.info(f"[오더북 통과] {coin} | {pressure['reason']}")
-                self._execute_buy(coin, coin_data['price'], signal['stop_loss_price'],
-                                  signal['take_profit_price'], source="at_signal")
-            else:
-                logger.info(f"[오더북 탈락] {coin} | {pressure['reason']}")
+            self._execute_buy(coin, coin_data['price'], signal['stop_loss_price'],
+                              signal['take_profit_price'], source="rhythm")
 
     # ===== 매수 실행 =====
 

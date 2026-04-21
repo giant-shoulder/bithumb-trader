@@ -32,7 +32,7 @@ MA_LONG = 120     # 장기
 # ===== AlphaTrend 파라미터 (제이슨 노아 리듬 단타) =====
 AT_PERIOD = 13            # AlphaTrend RSI/ATR 기간
 AT_MULTIPLIER = 0.3       # ATR 승수 (지지/저항선 폭)
-PULLBACK_MAX_CANDLES = 3  # 눌림목 대기 최대 캔들 수 (5분봉 기준 15분)
+PULLBACK_MAX_CANDLES = 6  # 눌림목 대기 최대 캔들 수 (5분봉 기준 30분)
 STOP_LOSS_MIN_PCT = 0.5   # 손절폭 최솟값 (%)
 STOP_LOSS_MAX_PCT = 2.5   # 손절폭 최댓값 (%)
 RR_RATIO = 1.5            # 손익비 (Risk:Reward 1:1.5)
@@ -50,7 +50,7 @@ BUY_UNIT_KRW = 150000        # 1회 매수 금액
 MAX_CONCURRENT_POSITIONS = 3  # 최대 동시 포지션 수
 
 # ===== 최소 가격 =====
-MIN_PRICE_KRW = 200          # 최소 코인 가격 (원) - 200원 미만 슬리피지 손절 불가피
+MIN_PRICE_KRW = 100          # 최소 코인 가격 (원) - 100원 미만 스프레드 손실 불가피
 
 # ===== 매도 후 재매수 금지 시간 =====
 COOLDOWN_AFTER_STOP_LOSS = 3600    # 손절 후 쿨다운 (초) - 1시간

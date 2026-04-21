@@ -1,17 +1,18 @@
 """
-AlphaTrend 기반 리듬 단타 전략 (제이슨 노아 방법론)
-3단계: 확인(AT green 전환) → 반응(눌림목 대기) → 진입(반등 양봉)
+제이슨 노아 '리듬 단타 매매법' - AlphaTrend 기반 3단계 전략
 
-손익비 R:R 1:1.5
-- 손절: 눌림목 캔들 저점 (클리핑 0.5%~2.5%)
-- 익절: 진입가 + 리스크 * 1.5
+[확인] AT 색상이 green으로 전환 → 추세 전환 캔들 강도 확인
+[반응] 전환 이후 눌림목(음봉) 대기 - 절대 추격 매수 금지
+[진입] 눌림목 후 반등 양봉에서 진입 / 손절: 눌림목 저점 / 익절: R:R 1:1.5
+
+노이즈 구간 (AT yellow): 진입 금지, 보유 중이면 즉시 청산
 """
 import numpy as np
 import pandas as pd
 from config import (
-    MA_MID1, MA_MID2,
     MIN_PRICE_KRW,
     AT_PERIOD, AT_MULTIPLIER,
+    PULLBACK_MAX_CANDLES,
     STOP_LOSS_MIN_PCT, STOP_LOSS_MAX_PCT,
     RR_RATIO,
     RSI_PERIOD,
@@ -28,7 +29,6 @@ class AlphaTrendStrategy:
     # ===== AlphaTrend 계산 =====
 
     def _calc_rsi_series(self, df: pd.DataFrame, period: int = None) -> pd.Series:
-        """RSI 시리즈 반환 (AT 내부용)"""
         if period is None:
             period = RSI_PERIOD
         delta = df['close'].diff()
@@ -46,18 +46,15 @@ class AlphaTrendStrategy:
         - RSI <  50: AT = min(high + ATR*mult, AT_prev) → 저항선 (하락 추세)
 
         Color:
-          - green:  AT[i] > AT[i-1]
-          - red:    AT[i] < AT[i-1]
-          - yellow: AT[i] == AT[i-1] (횡보/노이즈)
-
-        Returns: df에 'at_value', 'at_color' 컬럼 추가한 DataFrame
+          green  = AT[i] > AT[i-1]  (상승 추세)
+          red    = AT[i] < AT[i-1]  (하락 추세)
+          yellow = AT[i] == AT[i-1] (횡보/노이즈)
         """
         if period is None:
             period = AT_PERIOD
         if multiplier is None:
             multiplier = AT_MULTIPLIER
 
-        # ATR (EMA of True Range)
         prev_close = df['close'].shift(1)
         tr = pd.concat([
             df['high'] - df['low'],
@@ -68,7 +65,6 @@ class AlphaTrendStrategy:
         rsi = self._calc_rsi_series(df, period)
 
         at_arr = np.full(len(df), np.nan)
-
         for i in range(len(df)):
             if i < period or pd.isna(rsi.iloc[i]) or pd.isna(atr.iloc[i]):
                 continue
@@ -79,7 +75,6 @@ class AlphaTrendStrategy:
             else:
                 at_arr[i] = min(df['high'].iloc[i] + cur_atr, prev_at)
 
-        # Color 결정
         at_colors = ['yellow'] * len(df)
         for i in range(1, len(df)):
             if np.isnan(at_arr[i]) or np.isnan(at_arr[i - 1]):
@@ -96,159 +91,112 @@ class AlphaTrendStrategy:
         result['at_color'] = at_colors
         return result
 
-    # ===== AT 신호 감지 + 즉시 진입 (확인→진입 2단계) =====
+    # ===== 핵심: 3단계 리듬 진입 (Stateless 역추적) =====
 
-    def check_alpha_trend_signal(self, coin: str, df: pd.DataFrame,
-                                  current_price: float = None) -> dict:
-        """AT green 전환 감지 + 손절/익절가 계산 (즉시 진입용)
+    def check_rhythm_entry(self, coin: str, df: pd.DataFrame,
+                            current_price: float = None) -> dict:
+        """제이슨 노아 리듬 단타 3단계 통합 판단 (Stateless)
 
-        조건:
-        1. 직전 캔들 AT non-green → 현재 캔들 AT green 전환
-        2. MA20 > MA60 (중기 상승 추세)
-        3. 현재가 > AT 값
+        매 폴링마다 완성된 캔들을 역추적하여 패턴 확인:
 
-        손절: AT값 기반 (클리핑 STOP_LOSS_MIN_PCT~STOP_LOSS_MAX_PCT)
-        익절: 진입가 + 리스크 * RR_RATIO
+        [확인] 최근 PULLBACK_MAX_CANDLES 완성 캔들 내 AT green 전환 존재
+        [반응] 전환 이후 눌림목 음봉 발생 (완성된 캔들)
+        [진입] 현재 형성 중인 캔들이 양봉 (반등 확인)
+
+        손절: 눌림목 저점 (클리핑 0.5%~2.5%)
+        익절: 진입가 + 리스크 × RR_RATIO (1:1.5)
         """
         result = {
-            'signal': False, 'reason': '', 'at_value': 0.0,
+            'signal': False, 'reason': '',
             'stop_loss_price': 0.0, 'take_profit_price': 0.0,
         }
+
         price = current_price if current_price else df['close'].iloc[-1]
 
         if price < MIN_PRICE_KRW:
-            result['reason'] = f'가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원'
+            result['reason'] = f'가격 {price:.0f}원 < {MIN_PRICE_KRW}원'
             return result
 
-        min_len = max(MA_MID2, AT_PERIOD + 2)
-        if len(df) < min_len:
+        n = len(df)
+        if n < AT_PERIOD + PULLBACK_MAX_CANDLES + 3:
             result['reason'] = '데이터 부족'
             return result
 
         at_df = self.calc_alpha_trend(df)
-        cur_color = at_df['at_color'].iloc[-1]
-        prev_color = at_df['at_color'].iloc[-2]
+        colors = at_df['at_color'].tolist()
+
+        # ① 현재 AT가 green이어야 함 (yellow/red = 노이즈/하락 → 진입 금지)
+        if colors[-1] != 'green':
+            result['reason'] = f'현재 AT {colors[-1]} (진입 금지)'
+            return result
+
+        # ② 최근 PULLBACK_MAX_CANDLES 내 완성 캔들에서 green 전환 탐색 (역순)
+        # iloc[-1] = 현재 형성 중인 캔들 → 제외하고 완성된 캔들만 검색
+        transition_abs = None
+        search_end = n - 2        # 마지막 완성 캔들 (inclusive)
+        search_start = max(1, n - 1 - PULLBACK_MAX_CANDLES)  # 탐색 시작 (i-1 접근 위해 1 이상)
+
+        for i in range(search_end, search_start - 1, -1):  # 최신 → 과거
+            if colors[i] == 'green' and colors[i - 1] != 'green':
+                transition_abs = i
+                break  # 가장 최근 전환 사용
+
+        if transition_abs is None:
+            result['reason'] = f'AT green 전환 없음 (최근 {PULLBACK_MAX_CANDLES}캔들)'
+            return result
+
+        # ③ 전환 이후 ~ 현재 형성 캔들 직전 완성 캔들에서 눌림목(음봉) 탐색
+        pullback_low = None
+        for i in range(transition_abs + 1, n - 1):  # 전환 다음 ~ 마지막 완성 캔들
+            candle = df.iloc[i]
+            if candle['close'] < candle['open']:  # 음봉 = 눌림목
+                pullback_low = candle['low']      # 가장 최근 눌림목 저점 사용
+
+        if pullback_low is None:
+            candles_waited = (n - 2) - transition_abs
+            result['reason'] = f'눌림목(음봉) 대기 중 ({candles_waited}/{PULLBACK_MAX_CANDLES}캔들)'
+            return result
+
+        # ④ 현재 형성 중인 캔들이 양봉 (반등 확인)
+        cur = df.iloc[-1]
+        if cur['close'] <= cur['open']:
+            result['reason'] = '반등 양봉 대기 중 (현재 음봉)'
+            return result
+
+        # ⑤ 현재가 > AT값
         cur_at = at_df['at_value'].iloc[-1]
-
-        if np.isnan(cur_at):
-            result['reason'] = 'AT 계산 불가'
-            return result
-
-        # AT green 전환 확인
-        if not (cur_color == 'green' and prev_color != 'green'):
-            result['reason'] = f'AT green 전환 없음 ({prev_color}→{cur_color})'
-            return result
-
-        # MA20 > MA60 (중기 상승 추세 필터)
-        ma20 = df['close'].rolling(MA_MID1).mean().iloc[-1]
-        ma60 = df['close'].rolling(MA_MID2).mean().iloc[-1]
-        if ma20 <= ma60:
-            result['reason'] = f'MA20({ma20:.0f}) <= MA60({ma60:.0f})'
-            return result
-
-        # 현재가 > AT
-        if price <= cur_at:
+        if not np.isnan(cur_at) and price <= cur_at:
             result['reason'] = f'가격({price:.0f}) <= AT({cur_at:.0f})'
             return result
 
-        # 손절가: AT값 기반 (클리핑)
-        raw_stop_pct = (price - cur_at) / price * 100
+        # ⑥ 손절/익절 계산
+        raw_stop_pct = (price - pullback_low) / price * 100
         stop_pct = max(STOP_LOSS_MIN_PCT, min(STOP_LOSS_MAX_PCT, raw_stop_pct))
         stop_loss_price = price * (1 - stop_pct / 100)
         risk = price - stop_loss_price
         take_profit_price = price + risk * RR_RATIO
         target_pct = risk * RR_RATIO / price * 100
 
+        candles_since = (n - 2) - transition_abs
         result['signal'] = True
-        result['at_value'] = cur_at
         result['stop_loss_price'] = stop_loss_price
         result['take_profit_price'] = take_profit_price
         result['reason'] = (
-            f'AT green 전환 | MA20={ma20:.0f}>MA60={ma60:.0f} | AT={cur_at:.0f} | '
-            f'손절={stop_loss_price:.0f}(-{stop_pct:.1f}%) 익절={take_profit_price:.0f}(+{target_pct:.1f}%)'
+            f'리듬 진입 | 전환+{candles_since}캔들 | '
+            f'손절={stop_loss_price:.0f}(-{stop_pct:.1f}%) '
+            f'익절={take_profit_price:.0f}(+{target_pct:.1f}%)'
         )
-        logger.info(f"[AT 신호] {coin} | {result['reason']}")
+        logger.info(f'[리듬 진입] {coin} | {result["reason"]}')
         return result
 
-    # ===== 2~3단계: 반응 + 진입 (눌림목 + 반등) =====
-
-    def check_pullback_entry(self, coin: str, df: pd.DataFrame,
-                              pending_signal: dict) -> dict:
-        """눌림목 반등 진입 판단
-
-        조건:
-        1. AT 여전히 green (yellow/red면 신호 취소)
-        2. 직전 캔들 음봉 (눌림목)
-        3. 현재 캔들 양봉 (반등 확인)
-        4. 현재가 > AT 값
-        5. 손절 = 직전 음봉 저점 (클리핑 STOP_LOSS_MIN_PCT~STOP_LOSS_MAX_PCT)
-        6. 익절 = 진입가 + 리스크 * RR_RATIO
-        """
-        result = {'entry': False, 'reason': '', 'cancel': False}
-
-        at_df = self.calc_alpha_trend(df)
-        cur_color = at_df['at_color'].iloc[-1]
-        cur_at = at_df['at_value'].iloc[-1]
-
-        # AT가 green이 아니면 신호 취소
-        if cur_color != 'green':
-            result['cancel'] = True
-            result['reason'] = f'AT {cur_color} - 신호 취소'
-            return result
-
-        last = df.iloc[-1]  # 현재 캔들
-        prev = df.iloc[-2]  # 직전 캔들 (눌림목 후보)
-
-        # 현재 캔들 양봉 (반등 확인)
-        if last['close'] <= last['open']:
-            result['reason'] = '현재 음봉 (반등 미확인)'
-            return result
-
-        # 직전 캔들 음봉 (눌림목)
-        if prev['close'] >= prev['open']:
-            result['reason'] = '직전 양봉 (눌림목 없음)'
-            return result
-
-        entry_price = last['close']
-
-        # 현재가 > AT
-        if entry_price <= cur_at:
-            result['reason'] = f'가격({entry_price:.0f}) <= AT({cur_at:.0f})'
-            return result
-
-        # 손절가 계산 (눌림목 저점 기반, 클리핑)
-        pullback_low = prev['low']
-        raw_stop_pct = (entry_price - pullback_low) / entry_price * 100
-        stop_pct = max(STOP_LOSS_MIN_PCT, min(STOP_LOSS_MAX_PCT, raw_stop_pct))
-        stop_loss_price = entry_price * (1 - stop_pct / 100)
-
-        # 익절가 계산 (R:R = 1:RR_RATIO)
-        risk = entry_price - stop_loss_price
-        take_profit_price = entry_price + risk * RR_RATIO
-        target_pct = risk * RR_RATIO / entry_price * 100
-
-        result.update({
-            'entry': True,
-            'entry_price': entry_price,
-            'stop_loss_price': stop_loss_price,
-            'take_profit_price': take_profit_price,
-            'stop_pct': stop_pct,
-            'target_pct': target_pct,
-            'reason': (f'눌림목 반등 진입 | '
-                       f'손절={stop_loss_price:.0f}(-{stop_pct:.1f}%) '
-                       f'익절={take_profit_price:.0f}(+{target_pct:.1f}%)'),
-        })
-        logger.info(f"[눌림목 진입] {coin} | {result['reason']}")
-        return result
-
-    # ===== 노이즈 청산 =====
+    # ===== 노이즈 청산 (AT yellow → 즉시 청산) =====
 
     def check_at_noise_exit(self, coin: str, df: pd.DataFrame) -> bool:
-        """AT yellow 구간 진입 시 즉시 청산 신호 (AT_NOISE_EXIT=True 시 사용)"""
+        """AT yellow 전환 시 즉시 청산 신호"""
         at_df = self.calc_alpha_trend(df)
         cur_color = at_df['at_color'].iloc[-1]
         if cur_color == 'yellow':
-            logger.info(f"[AT 노이즈 청산] {coin} | AT yellow 전환 → 즉시 청산")
+            logger.info(f'[AT 노이즈 청산] {coin} | AT yellow → 즉시 청산')
             return True
         return False
 
@@ -256,10 +204,7 @@ class AlphaTrendStrategy:
 
     def check_at_stop_take(self, coin: str, current_price: float,
                             stop_loss_price: float, take_profit_price: float) -> dict:
-        """절대 가격 기반 손절/익절 판단 (WebSocket 틱 콜백용)
-
-        stop_loss_price / take_profit_price 가 0이면 해당 체크 스킵
-        """
+        """절대 가격 기반 손절/익절 (WebSocket 틱 콜백용)"""
         result = {'sell': False, 'reason': '', 'is_stop_loss': False}
 
         if stop_loss_price > 0 and current_price <= stop_loss_price:
@@ -273,20 +218,18 @@ class AlphaTrendStrategy:
 
         return result
 
-    # ===== 모멘텀 소멸 체크 =====
+    # ===== 모멘텀 소멸 =====
 
     def check_momentum_exit(self, coin: str, volume_rank: int) -> dict:
-        """거래대금 순위 이탈로 인한 모멘텀 소멸 매도"""
         result = {'sell': False, 'reason': '', 'is_stop_loss': False}
         if volume_rank > MOMENTUM_KILL_RANK:
             result['sell'] = True
             result['reason'] = f'모멘텀 소멸: 거래대금 {volume_rank}위 (기준 {MOMENTUM_KILL_RANK}위)'
         return result
 
-    # ===== 오더북 매수세 (진입 필터) =====
+    # ===== 오더북 매수세 (선택적 필터) =====
 
     def check_buy_pressure(self, orderbook: dict, trades: list) -> dict:
-        """호가 및 체결 기반 매수세 분석"""
         result = {'strong': False, 'bid_ratio': 0.0, 'trade_ratio': 0.0, 'reason': ''}
 
         if orderbook:
@@ -305,18 +248,15 @@ class AlphaTrendStrategy:
         else:
             trade_ratio = 0
 
-        bid_ok = bid_ratio >= 1.2
-        trade_ok = trade_ratio >= 0.60
-
-        if bid_ok and trade_ok:
+        if bid_ratio >= 1.2 and trade_ratio >= 0.60:
             result['strong'] = True
             result['reason'] = f'매수세 강함 (호가비율={bid_ratio:.2f}, 체결비율={trade_ratio:.0%})'
         else:
             reasons = []
-            if not bid_ok:
-                reasons.append(f'호가비율 약함({bid_ratio:.2f}<1.2)')
-            if not trade_ok:
-                reasons.append(f'체결비율 약함({trade_ratio:.0%}<60%)')
+            if bid_ratio < 1.2:
+                reasons.append(f'호가비율({bid_ratio:.2f}<1.2)')
+            if trade_ratio < 0.60:
+                reasons.append(f'체결비율({trade_ratio:.0%}<60%)')
             result['reason'] = ', '.join(reasons)
 
         return result
