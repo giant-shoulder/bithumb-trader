@@ -32,7 +32,7 @@ MA_LONG = 120     # 장기
 # ===== AlphaTrend 파라미터 (제이슨 노아 리듬 단타) =====
 AT_PERIOD = 13            # AlphaTrend RSI/ATR 기간
 AT_MULTIPLIER = 0.3       # ATR 승수 (지지/저항선 폭)
-PULLBACK_MAX_CANDLES = 6  # 눌림목 대기 최대 캔들 수 (5분봉 기준 30분)
+PULLBACK_MAX_CANDLES = 10  # 눌림목 대기 최대 캔들 수 (5분봉 기준 50분)
 STOP_LOSS_MIN_PCT = 0.5   # 손절폭 최솟값 (%)
 STOP_LOSS_MAX_PCT = 2.5   # 손절폭 최댓값 (%)
 RR_RATIO = 1.5            # 손익비 (Risk:Reward 1:1.5)
