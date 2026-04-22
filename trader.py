@@ -521,7 +521,7 @@ class AutoTrader:
                 buy_candidates.append((coin, signal, coin_data))
                 logger.info(f"[리듬 신호] {coin} | {signal['reason']}")
             else:
-                logger.debug(f"[탈락] {coin} | {signal['reason']}")
+                logger.info(f"[탈락] {coin} | {signal['reason']}")
 
         if not buy_candidates:
             logger.info("[매수 탐색 완료] 리듬 진입 신호 없음")

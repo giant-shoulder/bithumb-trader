@@ -95,12 +95,12 @@ class AlphaTrendStrategy:
 
     def check_rhythm_entry(self, coin: str, df: pd.DataFrame,
                             current_price: float = None) -> dict:
-        """제이슨 노아 리듬 단타 3단계 통합 판단 (Stateless)
+        """제이슨 노아 리듬 단타 진입 판단 (Stateless)
 
         매 폴링마다 완성된 캔들을 역추적하여 패턴 확인:
 
-        [확인] 최근 PULLBACK_MAX_CANDLES 완성 캔들 내 AT green 전환 존재
-        [반응] 전환 이후 눌림목 음봉 발생 (완성된 캔들)
+        [확인] 현재 AT가 green (상승 추세)
+        [반응] 최근 PULLBACK_MAX_CANDLES 내 눌림목(음봉) 존재
         [진입] 현재 형성 중인 캔들이 양봉 (반등 확인)
 
         손절: 눌림목 저점 (클리핑 0.5%~2.5%)
@@ -130,46 +130,33 @@ class AlphaTrendStrategy:
             result['reason'] = f'현재 AT {colors[-1]} (진입 금지)'
             return result
 
-        # ② 최근 PULLBACK_MAX_CANDLES 내 완성 캔들에서 green 전환 탐색 (역순)
-        # iloc[-1] = 현재 형성 중인 캔들 → 제외하고 완성된 캔들만 검색
-        transition_abs = None
-        search_end = n - 2        # 마지막 완성 캔들 (inclusive)
-        search_start = max(1, n - 1 - PULLBACK_MAX_CANDLES)  # 탐색 시작 (i-1 접근 위해 1 이상)
-
-        for i in range(search_end, search_start - 1, -1):  # 최신 → 과거
-            if colors[i] == 'green' and colors[i - 1] != 'green':
-                transition_abs = i
-                break  # 가장 최근 전환 사용
-
-        if transition_abs is None:
-            result['reason'] = f'AT green 전환 없음 (최근 {PULLBACK_MAX_CANDLES}캔들)'
-            return result
-
-        # ③ 전환 이후 ~ 현재 형성 캔들 직전 완성 캔들에서 눌림목(음봉) 탐색
+        # ② 최근 PULLBACK_MAX_CANDLES 완성 캔들 내 눌림목(음봉) 탐색
+        # 가장 최근 음봉의 저점을 손절가 기준으로 사용
+        search_start = max(0, n - 1 - PULLBACK_MAX_CANDLES)
         pullback_low = None
-        for i in range(transition_abs + 1, n - 1):  # 전환 다음 ~ 마지막 완성 캔들
+        for i in range(n - 2, search_start - 1, -1):  # 최신 완성 캔들 → 과거
             candle = df.iloc[i]
             if candle['close'] < candle['open']:  # 음봉 = 눌림목
-                pullback_low = candle['low']      # 가장 최근 눌림목 저점 사용
+                pullback_low = candle['low']
+                break  # 가장 최근 눌림목 사용
 
         if pullback_low is None:
-            candles_waited = (n - 2) - transition_abs
-            result['reason'] = f'눌림목(음봉) 대기 중 ({candles_waited}/{PULLBACK_MAX_CANDLES}캔들)'
+            result['reason'] = f'눌림목(음봉) 없음 (최근 {PULLBACK_MAX_CANDLES}캔들)'
             return result
 
-        # ④ 현재 형성 중인 캔들이 양봉 (반등 확인)
+        # ③ 현재 형성 중인 캔들이 양봉 (반등 확인)
         cur = df.iloc[-1]
         if cur['close'] <= cur['open']:
             result['reason'] = '반등 양봉 대기 중 (현재 음봉)'
             return result
 
-        # ⑤ 현재가 > AT값
+        # ④ 현재가 > AT값
         cur_at = at_df['at_value'].iloc[-1]
         if not np.isnan(cur_at) and price <= cur_at:
             result['reason'] = f'가격({price:.0f}) <= AT({cur_at:.0f})'
             return result
 
-        # ⑥ 손절/익절 계산
+        # ⑤ 손절/익절 계산
         raw_stop_pct = (price - pullback_low) / price * 100
         stop_pct = max(STOP_LOSS_MIN_PCT, min(STOP_LOSS_MAX_PCT, raw_stop_pct))
         stop_loss_price = price * (1 - stop_pct / 100)
@@ -177,12 +164,11 @@ class AlphaTrendStrategy:
         take_profit_price = price + risk * RR_RATIO
         target_pct = risk * RR_RATIO / price * 100
 
-        candles_since = (n - 2) - transition_abs
         result['signal'] = True
         result['stop_loss_price'] = stop_loss_price
         result['take_profit_price'] = take_profit_price
         result['reason'] = (
-            f'리듬 진입 | 전환+{candles_since}캔들 | '
+            f'리듬 진입 | 눌림목저점={pullback_low:.0f} | '
             f'손절={stop_loss_price:.0f}(-{stop_pct:.1f}%) '
             f'익절={take_profit_price:.0f}(+{target_pct:.1f}%)'
         )
