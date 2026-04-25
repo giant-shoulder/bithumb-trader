@@ -438,7 +438,12 @@ class AutoTrader:
     # ===== 텔레그램 신호 처리 =====
 
     def _process_telegram_signals(self):
-        """텔레그램 신호 큐 처리 - AT 분석 통과 시 pending 등록"""
+        """텔레그램 신호 큐 처리 - AT red만 아니면 즉시 매수
+
+        빗섬 공식 채널의 상승 신호는 이미 1차 필터링된 것이므로
+        AT 리듬 조건 대신 최소 조건(AT red 아님)만 확인 후 즉시 매수.
+        손절/익절은 최근 눌림목 기반으로 계산, 없으면 기본값 사용.
+        """
         while not self.telegram_queue.empty():
             try:
                 signal = self.telegram_queue.get_nowait()
@@ -450,31 +455,62 @@ class AutoTrader:
             logger.info(f"[텔레그램 신호] {coin} | {alert_type}")
 
             if coin in COIN_BLACKLIST:
+                logger.info(f"[텔레그램 탈락] {coin} | 블랙리스트")
                 continue
             if self.daily_coin_stops.get(coin, 0) >= DAILY_COIN_STOP_LIMIT:
+                logger.info(f"[텔레그램 탈락] {coin} | 당일 손절 한도")
                 continue
             if coin in self.positions:
+                logger.info(f"[텔레그램 탈락] {coin} | 이미 보유 중")
                 continue
             if time.time() <= self.sell_cooldown.get(coin, 0):
+                logger.info(f"[텔레그램 탈락] {coin} | 쿨다운 중")
                 continue
             if len(self.positions) >= MAX_CONCURRENT_POSITIONS:
+                logger.info(f"[텔레그램 탈락] {coin} | 최대 포지션 도달")
                 continue
 
             price = self.api.get_current_price(coin)
             if not price or price < MIN_PRICE_KRW:
+                logger.info(f"[텔레그램 탈락] {coin} | 가격 미달 ({price}원)")
                 continue
 
             df = self.api.get_ohlcv(coin, interval=BUY_CANDLE_INTERVAL, count=BUY_CANDLE_COUNT)
             if df is None:
+                logger.info(f"[텔레그램 탈락] {coin} | 캔들 조회 실패")
                 continue
 
-            signal = self.strategy.check_rhythm_entry(coin, df, current_price=price)
-            if signal['signal']:
-                logger.info(f"[텔레그램 리듬 매수] {coin} | {signal['reason']}")
-                self._execute_buy(coin, price, signal['stop_loss_price'],
-                                  signal['take_profit_price'], source="telegram")
+            # AT red(하락 추세 확정) 시에만 진입 차단
+            at_df = self.strategy.calc_alpha_trend(df)
+            cur_color = at_df['at_color'].iloc[-1]
+            if cur_color == 'red':
+                logger.info(f"[텔레그램 탈락] {coin} | AT red (하락 추세)")
+                continue
+
+            # 손절/익절 계산: 최근 눌림목 사용, 없으면 기본 1% 손절 / 1.5% 익절
+            from config import STOP_LOSS_MIN_PCT, STOP_LOSS_MAX_PCT, RR_RATIO
+            pullback_low = None
+            n = len(df)
+            for i in range(n - 2, max(0, n - 1 - PULLBACK_MAX_CANDLES) - 1, -1):
+                c = df.iloc[i]
+                if c['close'] < c['open']:
+                    pullback_low = c['low']
+                    break
+
+            if pullback_low:
+                raw_stop_pct = (price - pullback_low) / price * 100
+                stop_pct = max(STOP_LOSS_MIN_PCT, min(STOP_LOSS_MAX_PCT, raw_stop_pct))
             else:
-                logger.info(f"[텔레그램 탈락] {coin} | {signal['reason']}")
+                stop_pct = STOP_LOSS_MIN_PCT  # 기본 최소 손절폭
+
+            stop_loss_price = price * (1 - stop_pct / 100)
+            risk = price - stop_loss_price
+            take_profit_price = price + risk * RR_RATIO
+
+            logger.info(f"[텔레그램 즉시 매수] {coin} | AT {cur_color} | "
+                        f"손절={stop_loss_price:.0f}(-{stop_pct:.1f}%) "
+                        f"익절={take_profit_price:.0f}")
+            self._execute_buy(coin, price, stop_loss_price, take_profit_price, source="telegram")
 
     # ===== 신규 AT 신호 탐색 =====
 
