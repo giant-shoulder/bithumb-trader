@@ -130,6 +130,11 @@ class AlphaTrendStrategy:
             result['reason'] = f'현재 AT {colors[-1]} (진입 금지)'
             return result
 
+        # ① 직전 완성 캔들도 green이어야 함 (AT 안정성 확인 - whipsaw 방지)
+        if colors[-2] != 'green':
+            result['reason'] = f'AT green 불안정 (직전 캔들 {colors[-2]}, whipsaw 방지)'
+            return result
+
         # ② 최근 PULLBACK_MAX_CANDLES 완성 캔들 내 눌림목(음봉) 탐색
         # 가장 최근 음봉의 저점을 손절가 기준으로 사용
         search_start = max(0, n - 1 - PULLBACK_MAX_CANDLES)
@@ -178,11 +183,11 @@ class AlphaTrendStrategy:
     # ===== 노이즈 청산 (AT yellow → 즉시 청산) =====
 
     def check_at_noise_exit(self, coin: str, df: pd.DataFrame) -> bool:
-        """AT yellow 전환 시 즉시 청산 신호"""
+        """AT yellow/red 전환 시 즉시 청산 신호"""
         at_df = self.calc_alpha_trend(df)
         cur_color = at_df['at_color'].iloc[-1]
-        if cur_color == 'yellow':
-            logger.info(f'[AT 노이즈 청산] {coin} | AT yellow → 즉시 청산')
+        if cur_color in ('yellow', 'red'):
+            logger.info(f'[AT 노이즈 청산] {coin} | AT {cur_color} → 즉시 청산')
             return True
         return False
 
