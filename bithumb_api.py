@@ -98,8 +98,8 @@ class BithumbAPI:
             if df is None or df.empty:
                 return None
             df = df.tail(count).copy()
-            df.columns = ['open', 'close', 'high', 'low', 'volume']
-            df = df.astype(float)
+            # pybithumb이 이미 ['open','high','low','close','volume'] 순서로 반환
+            df = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
             return df
         except Exception as e:
             logger.error(f"캔들 조회 실패 [{coin}]: {e}")
