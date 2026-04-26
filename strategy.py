@@ -183,11 +183,15 @@ class AlphaTrendStrategy:
     # ===== 노이즈 청산 (AT yellow → 즉시 청산) =====
 
     def check_at_noise_exit(self, coin: str, df: pd.DataFrame) -> bool:
-        """AT yellow/red 전환 시 즉시 청산 신호"""
+        """AT yellow/red 전환 시 청산 신호 (완성 캔들 기준)
+
+        형성 중인 캔들(-1)은 가격 변동으로 색상이 계속 바뀌므로
+        마지막 완성 캔들(-2) 기준으로 판단 → 최소 1 캔들(5분) 보유 보장
+        """
         at_df = self.calc_alpha_trend(df)
-        cur_color = at_df['at_color'].iloc[-1]
-        if cur_color in ('yellow', 'red'):
-            logger.info(f'[AT 노이즈 청산] {coin} | AT {cur_color} → 즉시 청산')
+        completed_color = at_df['at_color'].iloc[-2]  # 마지막 완성 캔들
+        if completed_color in ('yellow', 'red'):
+            logger.info(f'[AT 노이즈 청산] {coin} | AT {completed_color}(완성캔들) → 청산')
             return True
         return False
 
