@@ -135,6 +135,13 @@ class AlphaTrendStrategy:
             result['reason'] = f'AT green 불안정 (직전 캔들 {colors[-2]}, whipsaw 방지)'
             return result
 
+        # ① RSI 필터: 실제 모멘텀 확인 (45~70 범위만 진입)
+        rsi_series = self._calc_rsi_series(df)
+        rsi = rsi_series.iloc[-1]
+        if pd.isna(rsi) or rsi < 45 or rsi > 70:
+            result['reason'] = f'RSI {rsi:.1f} (진입 가능: 45~70, 모멘텀 부족 또는 과매수)'
+            return result
+
         # ② 최근 PULLBACK_MAX_CANDLES 완성 캔들 내 눌림목(음봉) 탐색
         # 가장 최근 음봉의 저점을 손절가 기준으로 사용
         search_start = max(0, n - 1 - PULLBACK_MAX_CANDLES)

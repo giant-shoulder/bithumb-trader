@@ -51,7 +51,7 @@ BUY_UNIT_KRW = 150000        # 1회 매수 금액
 MAX_CONCURRENT_POSITIONS = 3  # 최대 동시 포지션 수
 
 # ===== 최소 가격 =====
-MIN_PRICE_KRW = 100          # 최소 코인 가격 (원) - 100원 미만 스프레드 손실 불가피
+MIN_PRICE_KRW = 300          # 최소 코인 가격 (원) - 300원 미만 슬리피지/스프레드 손실 과다
 
 # ===== 매도 후 재매수 금지 시간 =====
 COOLDOWN_AFTER_STOP_LOSS = 3600    # 손절 후 쿨다운 (초) - 1시간
