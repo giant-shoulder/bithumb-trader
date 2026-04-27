@@ -31,6 +31,7 @@ from config import (
     DAILY_COIN_STOP_LIMIT,
     PULLBACK_MAX_CANDLES,
     AT_NOISE_EXIT,
+    MIN_HOLD_SECONDS,
 )
 
 KST = timezone(timedelta(hours=9))
@@ -354,6 +355,18 @@ class AutoTrader:
 
             # 2. AT 노이즈 청산 (yellow 전환)
             if AT_NOISE_EXIT:
+                # 최소 보유시간 미달 시 스킵 (진입 직후 yellow whipsaw 방지)
+                entry_dt = datetime.strptime(pos.entry_time, "%Y-%m-%d %H:%M:%S")
+                hold_secs = (datetime.now() - entry_dt).total_seconds()
+                if hold_secs < MIN_HOLD_SECONDS:
+                    logger.info(f"[{coin}] 최소보유시간 미달 ({hold_secs:.0f}초 < {MIN_HOLD_SECONDS}초) - AT 노이즈 청산 스킵")
+                    # 상태 로그만 출력
+                    stop_str = f"{pos.stop_loss_price:,.0f}" if pos.stop_loss_price > 0 else "미설정"
+                    take_str = f"{pos.take_profit_price:,.0f}" if pos.take_profit_price > 0 else "미설정"
+                    logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
+                                f"손익={pnl_pct:+.1f}% | 손절={stop_str} 익절={take_str}")
+                    continue
+
                 df = self.api.get_ohlcv(coin, interval="5m", count=BUY_CANDLE_COUNT)
                 if df is not None and self.strategy.check_at_noise_exit(coin, df):
                     signal = {
@@ -480,11 +493,16 @@ class AutoTrader:
                 logger.info(f"[텔레그램 탈락] {coin} | 캔들 조회 실패")
                 continue
 
-            # AT red(하락 추세 확정) 시에만 진입 차단
+            # AT green 안정 확인 (yellow/red 진입 차단 - 즉시 노이즈 청산 방지)
             at_df = self.strategy.calc_alpha_trend(df)
-            cur_color = at_df['at_color'].iloc[-1]
-            if cur_color == 'red':
-                logger.info(f"[텔레그램 탈락] {coin} | AT red (하락 추세)")
+            colors = at_df['at_color'].tolist()
+            cur_color = colors[-1]
+            prev_color = colors[-2]
+            if cur_color != 'green':
+                logger.info(f"[텔레그램 탈락] {coin} | AT {cur_color} (green 필요)")
+                continue
+            if prev_color != 'green':
+                logger.info(f"[텔레그램 탈락] {coin} | AT green 불안정 (직전 {prev_color}, whipsaw 방지)")
                 continue
 
             # 손절/익절 계산: 최근 눌림목 사용, 없으면 기본 1% 손절 / 1.5% 익절
@@ -507,7 +525,7 @@ class AutoTrader:
             risk = price - stop_loss_price
             take_profit_price = price + risk * RR_RATIO
 
-            logger.info(f"[텔레그램 즉시 매수] {coin} | AT {cur_color} | "
+            logger.info(f"[텔레그램 즉시 매수] {coin} | AT green/green | "
                         f"손절={stop_loss_price:.0f}(-{stop_pct:.1f}%) "
                         f"익절={take_profit_price:.0f}")
             self._execute_buy(coin, price, stop_loss_price, take_profit_price, source="telegram")

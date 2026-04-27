@@ -65,6 +65,9 @@ TRADING_BLOCK_END = None    # 매수 차단 없음 (시간 제한 해제)
 BUY_CANDLE_INTERVAL = "5m"   # 매수 신호용 캔들 간격
 BUY_CANDLE_COUNT = 200        # 매수 신호용 캔들 개수
 
+# ===== 최소 보유시간 =====
+MIN_HOLD_SECONDS = 300        # AT 노이즈 청산 발동 최소 보유시간 (초) - 5분 = 1캔들
+
 # ===== 루프 설정 =====
 POLLING_INTERVAL_IDLE = 30    # 포지션 없을 때 실행 주기 (초)
 POLLING_INTERVAL_ACTIVE = 5   # 포지션 있을 때 실행 주기 (초)
