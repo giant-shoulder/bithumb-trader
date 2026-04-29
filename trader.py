@@ -368,16 +368,31 @@ class AutoTrader:
                     continue
 
                 df = self.api.get_ohlcv(coin, interval="5m", count=BUY_CANDLE_COUNT)
-                if df is not None and self.strategy.check_at_noise_exit(coin, df):
-                    signal = {
-                        'sell': True,
-                        'reason': 'AT yellow 노이즈 청산',
-                        'is_stop_loss': False,
-                    }
-                    logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
-                                f"손익={pnl_pct:+.1f}% | {signal['reason']}")
-                    coins_to_sell.append((coin, pos, current_price, signal))
-                    continue
+                if df is not None:
+                    at_df = self.strategy.calc_alpha_trend(df)
+                    completed_color = at_df['at_color'].iloc[-2]  # 마지막 완성 캔들
+
+                    if completed_color == 'red':
+                        # 하락 추세 확정 → 수익/손실 무관하게 청산
+                        signal = {'sell': True, 'reason': 'AT red 하락 청산', 'is_stop_loss': False}
+                        logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
+                                    f"손익={pnl_pct:+.1f}% | {signal['reason']}")
+                        coins_to_sell.append((coin, pos, current_price, signal))
+                        continue
+                    elif completed_color == 'yellow' and current_price < pos.buy_price:
+                        # 손실 중 + AT yellow → 청산 (더 커지기 전에 손실 차단)
+                        signal = {'sell': True, 'reason': 'AT yellow 노이즈 청산', 'is_stop_loss': False}
+                        logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
+                                    f"손익={pnl_pct:+.1f}% | {signal['reason']}")
+                        coins_to_sell.append((coin, pos, current_price, signal))
+                        continue
+                    elif completed_color == 'yellow' and current_price >= pos.buy_price:
+                        # 수익 중 + AT yellow → 보유 유지 (WS 익절가 도달 기대)
+                        stop_str = f"{pos.stop_loss_price:,.0f}" if pos.stop_loss_price > 0 else "미설정"
+                        take_str = f"{pos.take_profit_price:,.0f}" if pos.take_profit_price > 0 else "미설정"
+                        logger.info(f"[{coin}] AT yellow이나 수익 중({pnl_pct:+.1f}%) → 보유 유지 "
+                                    f"| 익절={take_str}")
+                        continue
 
             # 상태 로그 (stop/take는 WS가 처리 중)
             stop_str = f"{pos.stop_loss_price:,.0f}" if pos.stop_loss_price > 0 else "미설정"
