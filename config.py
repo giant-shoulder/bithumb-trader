@@ -67,6 +67,7 @@ BUY_CANDLE_COUNT = 200        # 매수 신호용 캔들 개수
 
 # ===== 최소 보유시간 =====
 MIN_HOLD_SECONDS = 600        # AT 노이즈 청산 발동 최소 보유시간 (초) - 10분 = 2캔들
+MAX_HOLD_MINUTES = 60         # 손실 중 최대 보유시간 (분) - 초과 시 강제 청산
 
 # ===== 루프 설정 =====
 POLLING_INTERVAL_IDLE = 30    # 포지션 없을 때 실행 주기 (초)

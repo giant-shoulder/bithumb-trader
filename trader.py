@@ -32,6 +32,7 @@ from config import (
     PULLBACK_MAX_CANDLES,
     AT_NOISE_EXIT,
     MIN_HOLD_SECONDS,
+    MAX_HOLD_MINUTES,
 )
 
 KST = timezone(timedelta(hours=9))
@@ -393,6 +394,20 @@ class AutoTrader:
                         logger.info(f"[{coin}] AT yellow이나 수익 중({pnl_pct:+.1f}%) → 보유 유지 "
                                     f"| 익절={take_str}")
                         continue
+
+            # 3. 시간 기반 청산: MAX_HOLD_MINUTES 이상 보유 + 손실 중 → 강제 청산
+            entry_dt_check = datetime.strptime(pos.entry_time, "%Y-%m-%d %H:%M:%S")
+            hold_mins = (datetime.now() - entry_dt_check).total_seconds() / 60
+            if hold_mins >= MAX_HOLD_MINUTES and current_price < pos.buy_price:
+                signal = {
+                    'sell': True,
+                    'reason': f'장기보유 청산 ({hold_mins:.0f}분, 수익 없음)',
+                    'is_stop_loss': False,
+                }
+                logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
+                            f"손익={pnl_pct:+.1f}% | {signal['reason']}")
+                coins_to_sell.append((coin, pos, current_price, signal))
+                continue
 
             # 상태 로그 (stop/take는 WS가 처리 중)
             stop_str = f"{pos.stop_loss_price:,.0f}" if pos.stop_loss_price > 0 else "미설정"

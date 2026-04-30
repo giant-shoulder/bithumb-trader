@@ -168,6 +168,15 @@ class AlphaTrendStrategy:
             result['reason'] = f'가격({price:.0f}) <= AT({cur_at:.0f})'
             return result
 
+        # ④-2 반등 캔들 거래량 필터 (약한 반등 = 가짜 신호 방지)
+        # 현재 형성 중인 양봉의 거래량이 최근 20봉 평균의 70% 이상이어야 진입
+        cur_vol = df['volume'].iloc[-1]
+        avg_vol = df['volume'].iloc[-21:-1].mean()
+        if avg_vol > 0 and cur_vol < avg_vol * 0.7:
+            result['reason'] = (f'반등 거래량 부족 (현재 {cur_vol:.0f} < 평균 {avg_vol:.0f}의 70%) '
+                                f'→ 약한 반등')
+            return result
+
         # ⑤ 손절/익절 계산
         raw_stop_pct = (price - pullback_low) / price * 100
         stop_pct = max(STOP_LOSS_MIN_PCT, min(STOP_LOSS_MAX_PCT, raw_stop_pct))
