@@ -7,6 +7,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ===== 수수료 =====
+FEE_RATE = 0.0004             # 빗섬 거래 수수료 0.04% (매수/매도 각각)
+FEE_ROUND_TRIP = FEE_RATE * 2 # 왕복 수수료 0.08% (손익분기 최소 기준)
+
 # ===== API 설정 =====
 BITHUMB_ACCESS_KEY = os.environ.get("BITHUMB_ACCESS_KEY", "여기에_액세스키_입력")
 BITHUMB_SECRET_KEY = os.environ.get("BITHUMB_SECRET_KEY", "여기에_시크릿키_입력")

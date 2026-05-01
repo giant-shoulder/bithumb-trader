@@ -33,6 +33,8 @@ from config import (
     AT_NOISE_EXIT,
     MIN_HOLD_SECONDS,
     MAX_HOLD_MINUTES,
+    FEE_RATE,
+    FEE_ROUND_TRIP,
 )
 
 KST = timezone(timedelta(hours=9))
@@ -380,25 +382,25 @@ class AutoTrader:
                                     f"손익={pnl_pct:+.1f}% | {signal['reason']}")
                         coins_to_sell.append((coin, pos, current_price, signal))
                         continue
-                    elif completed_color == 'yellow' and current_price < pos.buy_price:
-                        # 손실 중 + AT yellow → 청산 (더 커지기 전에 손실 차단)
+                    elif completed_color == 'yellow' and current_price < pos.buy_price * (1 + FEE_ROUND_TRIP):
+                        # 수수료 감안 손익분기(+0.08%) 미달 + AT yellow → 청산
                         signal = {'sell': True, 'reason': 'AT yellow 노이즈 청산', 'is_stop_loss': False}
                         logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
                                     f"손익={pnl_pct:+.1f}% | {signal['reason']}")
                         coins_to_sell.append((coin, pos, current_price, signal))
                         continue
-                    elif completed_color == 'yellow' and current_price >= pos.buy_price:
-                        # 수익 중 + AT yellow → 보유 유지 (WS 익절가 도달 기대)
+                    elif completed_color == 'yellow' and current_price >= pos.buy_price * (1 + FEE_ROUND_TRIP):
+                        # 수수료 커버 수익 중 + AT yellow → 보유 유지 (WS 익절가 도달 기대)
                         stop_str = f"{pos.stop_loss_price:,.0f}" if pos.stop_loss_price > 0 else "미설정"
                         take_str = f"{pos.take_profit_price:,.0f}" if pos.take_profit_price > 0 else "미설정"
-                        logger.info(f"[{coin}] AT yellow이나 수익 중({pnl_pct:+.1f}%) → 보유 유지 "
+                        logger.info(f"[{coin}] AT yellow이나 수수료 감안 수익 중({pnl_pct:+.1f}%) → 보유 유지 "
                                     f"| 익절={take_str}")
                         continue
 
             # 3. 시간 기반 청산: MAX_HOLD_MINUTES 이상 보유 + 손실 중 → 강제 청산
             entry_dt_check = datetime.strptime(pos.entry_time, "%Y-%m-%d %H:%M:%S")
             hold_mins = (datetime.now() - entry_dt_check).total_seconds() / 60
-            if hold_mins >= MAX_HOLD_MINUTES and current_price < pos.buy_price:
+            if hold_mins >= MAX_HOLD_MINUTES and current_price < pos.buy_price * (1 + FEE_ROUND_TRIP):
                 signal = {
                     'sell': True,
                     'reason': f'장기보유 청산 ({hold_mins:.0f}분, 수익 없음)',
@@ -456,7 +458,9 @@ class AutoTrader:
                         logger.info(f"[{coin}] 실제 체결: {executed_funds:,.0f}원")
 
             sell_amount = actual_amount if actual_amount else actual_qty * price
-            pnl_krw = sell_amount - pos.total_amount
+            # 수수료 차감: 매수 0.04% + 매도 0.04% = 왕복 0.08%
+            fee_krw = (pos.total_amount + sell_amount) * FEE_RATE
+            pnl_krw = sell_amount - pos.total_amount - fee_krw
             pnl_pct = pnl_krw / pos.total_amount * 100
             trade_logger.log_trade(coin, "매도", actual_exec_price, actual_qty,
                                    sell_amount, pnl_pct, reason)
@@ -553,7 +557,7 @@ class AutoTrader:
 
             stop_loss_price = price * (1 - stop_pct / 100)
             risk = price - stop_loss_price
-            take_profit_price = price + risk * RR_RATIO
+            take_profit_price = price + risk * RR_RATIO + price * FEE_ROUND_TRIP  # 수수료 반영
 
             logger.info(f"[텔레그램 즉시 매수] {coin} | AT green/green | "
                         f"손절={stop_loss_price:.0f}(-{stop_pct:.1f}%) "

@@ -17,6 +17,7 @@ from config import (
     RR_RATIO,
     RSI_PERIOD,
     MOMENTUM_KILL_RANK,
+    FEE_ROUND_TRIP,
 )
 from logger import get_logger
 
@@ -177,13 +178,14 @@ class AlphaTrendStrategy:
                                 f'→ 약한 반등')
             return result
 
-        # ⑤ 손절/익절 계산
+        # ⑤ 손절/익절 계산 (수수료 0.08% 왕복 반영)
         raw_stop_pct = (price - pullback_low) / price * 100
         stop_pct = max(STOP_LOSS_MIN_PCT, min(STOP_LOSS_MAX_PCT, raw_stop_pct))
         stop_loss_price = price * (1 - stop_pct / 100)
         risk = price - stop_loss_price
-        take_profit_price = price + risk * RR_RATIO
-        target_pct = risk * RR_RATIO / price * 100
+        # 익절가: R:R 달성 후 수수료까지 커버하도록 상향 조정
+        take_profit_price = price + risk * RR_RATIO + price * FEE_ROUND_TRIP
+        target_pct = (take_profit_price - price) / price * 100
 
         result['signal'] = True
         result['stop_loss_price'] = stop_loss_price
