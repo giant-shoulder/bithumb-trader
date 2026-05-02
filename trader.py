@@ -35,6 +35,8 @@ from config import (
     MAX_HOLD_MINUTES,
     FEE_RATE,
     FEE_ROUND_TRIP,
+    HIGHER_TF_CANDLE, HIGHER_TF_COUNT,
+    CONSECUTIVE_LOSS_LIMIT, CONSECUTIVE_LOSS_PAUSE_HOURS,
 )
 
 KST = timezone(timedelta(hours=9))
@@ -77,6 +79,8 @@ class AutoTrader:
         self.telegram_queue: queue.Queue = queue.Queue()
 
         self.pending_signals: dict = {}  # 미사용 (즉시 진입 방식)
+        self.consecutive_losses: int = 0          # 연속 손실 횟수
+        self.consecutive_loss_pause_until: float = 0.0  # 연속 손실 매수 중단 종료 시각
 
         # WebSocket 실시간 가격 모니터
         self._ws_sell_queue: queue.Queue = queue.Queue()   # 손절/익절 즉시 매도 큐
@@ -468,6 +472,17 @@ class AutoTrader:
             self.positions.pop(coin, None)
             self._update_ws_subscriptions()
 
+            # 연속 손실 서킷 브레이커
+            if pnl_krw < 0:
+                self.consecutive_losses += 1
+                if self.consecutive_losses >= CONSECUTIVE_LOSS_LIMIT:
+                    pause_secs = CONSECUTIVE_LOSS_PAUSE_HOURS * 3600
+                    self.consecutive_loss_pause_until = time.time() + pause_secs
+                    logger.warning(f"[서킷 브레이커] 연속 {self.consecutive_losses}회 손실 "
+                                   f"→ {CONSECUTIVE_LOSS_PAUSE_HOURS}시간 매수 중단")
+            else:
+                self.consecutive_losses = 0  # 익절 시 초기화
+
             cooldown = COOLDOWN_AFTER_STOP_LOSS if is_stop_loss else COOLDOWN_AFTER_TAKE_PROFIT
             self.sell_cooldown[coin] = time.time() + cooldown
             cooldown_label = "1시간" if is_stop_loss else "4시간"
@@ -485,12 +500,20 @@ class AutoTrader:
     # ===== 텔레그램 신호 처리 =====
 
     def _process_telegram_signals(self):
-        """텔레그램 신호 큐 처리 - AT red만 아니면 즉시 매수
+        """텔레그램 신호 큐 처리 - 30m AT green + 5m AT green/green 확인 후 매수
 
         빗섬 공식 채널의 상승 신호는 이미 1차 필터링된 것이므로
         AT 리듬 조건 대신 최소 조건(AT red 아님)만 확인 후 즉시 매수.
         손절/익절은 최근 눌림목 기반으로 계산, 없으면 기본값 사용.
         """
+        # 연속 손실 서킷 브레이커 체크
+        if time.time() < self.consecutive_loss_pause_until:
+            remain = (self.consecutive_loss_pause_until - time.time()) / 60
+            logger.info(f"[서킷 브레이커] 텔레그램 신호 무시 중 (재개까지 {remain:.0f}분)")
+            while not self.telegram_queue.empty():
+                self.telegram_queue.get_nowait()
+            return
+
         while not self.telegram_queue.empty():
             try:
                 signal = self.telegram_queue.get_nowait()
@@ -526,6 +549,15 @@ class AutoTrader:
             if df is None:
                 logger.info(f"[텔레그램 탈락] {coin} | 캔들 조회 실패")
                 continue
+
+            # 상위 타임프레임(30분봉) AT 필터
+            df_htf = self.api.get_ohlcv(coin, interval=HIGHER_TF_CANDLE, count=HIGHER_TF_COUNT)
+            if df_htf is not None:
+                at_htf = self.strategy.calc_alpha_trend(df_htf)
+                htf_color = at_htf['at_color'].iloc[-2]
+                if htf_color != 'green':
+                    logger.info(f"[텔레그램 탈락] {coin} | {HIGHER_TF_CANDLE} AT {htf_color} (상위TF 하락/횡보)")
+                    continue
 
             # AT green 안정 확인 (yellow/red 진입 차단 - 즉시 노이즈 청산 방지)
             at_df = self.strategy.calc_alpha_trend(df)
@@ -572,6 +604,12 @@ class AutoTrader:
             logger.info(f"[매수 탐색] 최대 포지션 수 도달 ({len(self.positions)}/{MAX_CONCURRENT_POSITIONS}개)")
             return
 
+        # 연속 손실 서킷 브레이커 체크
+        if time.time() < self.consecutive_loss_pause_until:
+            remain = (self.consecutive_loss_pause_until - time.time()) / 60
+            logger.info(f"[서킷 브레이커] 연속 손실 매수 중단 중 (재개까지 {remain:.0f}분)")
+            return
+
         now = time.time()
         daily_blocked = [coin for coin, cnt in self.daily_coin_stops.items() if cnt >= DAILY_COIN_STOP_LIMIT]
         candidates = [
@@ -598,6 +636,17 @@ class AutoTrader:
 
             if price and price < MIN_PRICE_KRW:
                 logger.debug(f"[탈락] {coin} | 가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원")
+                continue
+
+            # 상위 타임프레임(30분봉) AT 필터 - 하락장 진입 차단
+            df_htf = self.api.get_ohlcv(coin, interval=HIGHER_TF_CANDLE, count=HIGHER_TF_COUNT)
+            if df_htf is None:
+                logger.info(f"[탈락] {coin} | {HIGHER_TF_CANDLE} 캔들 조회 실패")
+                continue
+            at_htf = self.strategy.calc_alpha_trend(df_htf)
+            htf_color = at_htf['at_color'].iloc[-2]  # 마지막 완성 캔들
+            if htf_color != 'green':
+                logger.info(f"[탈락] {coin} | {HIGHER_TF_CANDLE} AT {htf_color} (상위TF 하락/횡보)")
                 continue
 
             df = self.api.get_ohlcv(coin, interval=BUY_CANDLE_INTERVAL, count=BUY_CANDLE_COUNT)

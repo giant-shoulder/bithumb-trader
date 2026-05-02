@@ -73,6 +73,14 @@ BUY_CANDLE_COUNT = 200        # 매수 신호용 캔들 개수
 MIN_HOLD_SECONDS = 600        # AT 노이즈 청산 발동 최소 보유시간 (초) - 10분 = 2캔들
 MAX_HOLD_MINUTES = 60         # 손실 중 최대 보유시간 (분) - 초과 시 강제 청산
 
+# ===== 상위 타임프레임 필터 =====
+HIGHER_TF_CANDLE = "30m"      # 진입 확인용 상위 타임프레임
+HIGHER_TF_COUNT = 60          # 상위 TF 캔들 개수
+
+# ===== 연속 손실 서킷 브레이커 =====
+CONSECUTIVE_LOSS_LIMIT = 4    # 연속 손실 N회 시 매수 중단
+CONSECUTIVE_LOSS_PAUSE_HOURS = 2  # 연속 손실 후 매수 중단 시간 (시간)
+
 # ===== 루프 설정 =====
 POLLING_INTERVAL_IDLE = 30    # 포지션 없을 때 실행 주기 (초)
 POLLING_INTERVAL_ACTIVE = 5   # 포지션 있을 때 실행 주기 (초)
