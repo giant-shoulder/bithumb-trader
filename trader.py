@@ -92,7 +92,7 @@ class AutoTrader:
         self._ws_monitor.start()
         logger.info("=" * 50)
         logger.info("빗섬 자동매매 시스템 시작 (AlphaTrend 리듬 단타)")
-        logger.info(f"설정: 손절 0.5~2.5% | 익절 R:R 1:1.5 | AT 노이즈 청산 {AT_NOISE_EXIT}")
+        logger.info(f"설정: 손절 0.5~2.5% | 익절 R:R 1:1.5 | AT red 청산 / yellow 보유 유지")
         logger.info(f"설정: 최소가격 {MIN_PRICE_KRW}원 | 거래중단 {TRADING_BLOCK_START}~{TRADING_BLOCK_END}시")
         logger.info(f"설정: 최대 포지션 {MAX_CONCURRENT_POSITIONS}개 | 캔들 {BUY_CANDLE_INTERVAL}")
         logger.info("=" * 50)
@@ -380,25 +380,19 @@ class AutoTrader:
                     completed_color = at_df['at_color'].iloc[-2]  # 마지막 완성 캔들
 
                     if completed_color == 'red':
-                        # 하락 추세 확정 → 수익/손실 무관하게 청산
+                        # 하락 추세 확정(AT red) → 수익/손실 무관 청산
                         signal = {'sell': True, 'reason': 'AT red 하락 청산', 'is_stop_loss': False}
                         logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
                                     f"손익={pnl_pct:+.1f}% | {signal['reason']}")
                         coins_to_sell.append((coin, pos, current_price, signal))
                         continue
-                    elif completed_color == 'yellow' and current_price < pos.buy_price * (1 + FEE_ROUND_TRIP):
-                        # 수수료 감안 손익분기(+0.08%) 미달 + AT yellow → 청산
-                        signal = {'sell': True, 'reason': 'AT yellow 노이즈 청산', 'is_stop_loss': False}
-                        logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
-                                    f"손익={pnl_pct:+.1f}% | {signal['reason']}")
-                        coins_to_sell.append((coin, pos, current_price, signal))
-                        continue
-                    elif completed_color == 'yellow' and current_price >= pos.buy_price * (1 + FEE_ROUND_TRIP):
-                        # 수수료 커버 수익 중 + AT yellow → 보유 유지 (WS 익절가 도달 기대)
+                    else:
+                        # AT yellow/green → 보유 유지 (WS 손절/익절 또는 60분 시간청산에 위임)
                         stop_str = f"{pos.stop_loss_price:,.0f}" if pos.stop_loss_price > 0 else "미설정"
                         take_str = f"{pos.take_profit_price:,.0f}" if pos.take_profit_price > 0 else "미설정"
-                        logger.info(f"[{coin}] AT yellow이나 수수료 감안 수익 중({pnl_pct:+.1f}%) → 보유 유지 "
-                                    f"| 익절={take_str}")
+                        logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
+                                    f"손익={pnl_pct:+.1f}% | AT {completed_color} 보유 중 "
+                                    f"| 손절={stop_str} 익절={take_str}")
                         continue
 
             # 3. 시간 기반 청산: MAX_HOLD_MINUTES 이상 보유 + 손실 중 → 강제 청산
