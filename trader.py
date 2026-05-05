@@ -37,6 +37,7 @@ from config import (
     FEE_ROUND_TRIP,
     HIGHER_TF_CANDLE, HIGHER_TF_COUNT,
     CONSECUTIVE_LOSS_LIMIT, CONSECUTIVE_LOSS_PAUSE_HOURS,
+    TRAILING_STOP_TRIGGER_PCT, TRAILING_STOP_TRAIL_PCT,
 )
 
 KST = timezone(timedelta(hours=9))
@@ -54,10 +55,12 @@ class Position:
     coin: str
     buy_price: float
     quantity: float
-    stop_loss_price: float = 0.0    # AT 기반 절대 손절가
+    stop_loss_price: float = 0.0    # AT 기반 절대 손절가 (트레일링 스탑으로 동적 상향)
     take_profit_price: float = 0.0  # R:R 기반 절대 익절가
     total_amount: float = 0.0       # 총 투자금액
     entry_time: str = ""
+    highest_price: float = 0.0      # 보유 중 최고가 (트레일링 스탑용)
+    trailing_active: bool = False    # 트레일링 스탑 활성화 여부
 
     def __post_init__(self):
         self.entry_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -216,10 +219,21 @@ class AutoTrader:
     # ===== WebSocket 실시간 가격 모니터 =====
 
     def _on_ws_price(self, coin: str, price: float):
-        """WebSocket 실시간 가격 콜백 - 절대 손절/익절 즉시 감지"""
+        """WebSocket 실시간 가격 콜백 - 손절/익절 + 트레일링 스탑"""
         pos = self.positions.get(coin)
         if not pos:
             return
+
+        # 트레일링 스탑: 수익이 TRIGGER_PCT 이상일 때 고점 추적 → 손절가 동적 상향
+        profit_pct = (price - pos.buy_price) / pos.buy_price * 100
+        if profit_pct >= TRAILING_STOP_TRIGGER_PCT:
+            if price > pos.highest_price:
+                pos.highest_price = price
+                pos.trailing_active = True
+            if pos.trailing_active:
+                trail_stop = pos.highest_price * (1 - TRAILING_STOP_TRAIL_PCT / 100)
+                if trail_stop > pos.stop_loss_price:
+                    pos.stop_loss_price = trail_stop
 
         # stop/take 미설정 포지션 (기존 포지션)은 스킵
         if pos.stop_loss_price <= 0 and pos.take_profit_price <= 0:
@@ -231,8 +245,13 @@ class AutoTrader:
         if result['sell']:
             removed = self.positions.pop(coin, None)
             if removed:
-                logger.info(f"[WS 즉시 매도] {coin} | {result['reason']}")
-                self._ws_sell_queue.put((coin, removed, price, result['reason'], result['is_stop_loss']))
+                # 트레일링 스탑 발동 여부를 사유에 반영
+                reason = result['reason']
+                if result['is_stop_loss'] and removed.trailing_active:
+                    reason = f"트레일링 스탑 (고점 {removed.highest_price:,.0f}원 → 손절 {removed.stop_loss_price:,.0f}원)"
+                    result['is_stop_loss'] = False  # 수익 구간에서 트레일링 청산 = 손절 아님
+                logger.info(f"[WS 즉시 매도] {coin} | {reason}")
+                self._ws_sell_queue.put((coin, removed, price, reason, result['is_stop_loss']))
 
     def _process_ws_sells(self):
         """WebSocket 트리거 매도 큐 처리 (1초마다 메인 루프에서 호출)"""
