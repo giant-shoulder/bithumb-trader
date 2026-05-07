@@ -14,20 +14,25 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 
 def send(message: str):
-    """텔레그램 메시지 전송 (설정 없으면 무시)"""
+    """텔레그램 메시지 전송 (실패 시 1회 재시도)"""
     if not BOT_TOKEN or not CHAT_ID:
         return
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        data = urllib.parse.urlencode({
-            "chat_id": CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML",
-        }).encode()
-        req = urllib.request.Request(url, data=data, method="POST")
-        urllib.request.urlopen(req, timeout=5)
-    except Exception as e:
-        logger.debug(f"[텔레그램 알림 실패] {e}")
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = urllib.parse.urlencode({
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+    }).encode()
+    for attempt in range(2):  # 최대 2회 시도
+        try:
+            req = urllib.request.Request(url, data=data, method="POST")
+            urllib.request.urlopen(req, timeout=10)
+            return  # 성공
+        except Exception as e:
+            if attempt == 0:
+                logger.warning(f"[텔레그램 알림 실패, 재시도] {e}")
+            else:
+                logger.warning(f"[텔레그램 알림 최종 실패] {e}")
 
 
 def notify_buy(coin: str, price: float, amount: int, count: int, total_splits: int, source: str = ""):

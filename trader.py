@@ -458,6 +458,11 @@ class AutoTrader:
             return
 
         result = self.api.sell_market(coin, actual_qty)
+        if not result:
+            logger.error(f"[매도 실패] {coin} | 시장가 매도 API 오류 → 알림 전송")
+            est_amount = int(actual_qty * price)
+            notifier.notify_sell(coin, price, est_amount, 0.0, 0.0, f"⚠️ 매도 API 실패 ({reason})")
+            return
         if result:
             order_id = result.get('order_id') or result.get('uuid')
             actual_amount = None
