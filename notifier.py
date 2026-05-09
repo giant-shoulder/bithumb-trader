@@ -2,6 +2,7 @@
 텔레그램 봇 알림 - 매수/매도 체결 시 즉시 알림
 """
 import os
+import html
 import urllib.request
 import urllib.parse
 import json
@@ -37,7 +38,7 @@ def send(message: str):
 
 def notify_buy(coin: str, price: float, amount: int, count: int, total_splits: int, source: str = ""):
     tag = "🔺 불타기" if count > 1 else "🟢 매수"
-    src = f" [{source}]" if source else ""
+    src = f" [{html.escape(source)}]" if source else ""
     msg = (
         f"{tag} <b>{coin}</b>{src}\n"
         f"가격: {price:,.0f}원\n"
@@ -56,6 +57,6 @@ def notify_sell(coin: str, price: float, amount: int, pnl_pct: float, pnl_krw: f
         f"가격: {price:,.0f}원\n"
         f"금액: {amount:,}원\n"
         f"손익: {pnl_pct:+.2f}% ({pnl_krw:+,.0f}원)\n"
-        f"사유: {reason}"
+        f"사유: {html.escape(reason)}"
     )
     send(msg)
