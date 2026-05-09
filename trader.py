@@ -452,10 +452,15 @@ class AutoTrader:
 
         actual_qty = self.api.get_coin_balance(coin)
         if actual_qty <= 0:
-            logger.warning(f"[{coin}] 실제 잔고 없음, 포지션 제거")
-            self.positions.pop(coin, None)
-            self._update_ws_subscriptions()
-            return
+            # 잔고 조회 실패 시 기록된 수량으로 재시도 (API 일시 오류 대응)
+            logger.warning(f"[{coin}] 잔고 조회 0 → 기록 수량({pos.quantity:.6f})으로 매도 재시도")
+            actual_qty = pos.quantity
+            if actual_qty <= 0:
+                logger.error(f"[{coin}] 수량 정보 없음, 매도 불가")
+                self.positions.pop(coin, None)
+                self._update_ws_subscriptions()
+                notifier.notify_sell(coin, price, 0, 0.0, 0.0, f"⚠️ 매도 불가 - 잔고 없음 ({reason})")
+                return
 
         result = self.api.sell_market(coin, actual_qty)
         if not result:
@@ -463,57 +468,57 @@ class AutoTrader:
             est_amount = int(actual_qty * price)
             notifier.notify_sell(coin, price, est_amount, 0.0, 0.0, f"⚠️ 매도 API 실패 ({reason})")
             return
-        if result:
-            order_id = result.get('order_id') or result.get('uuid')
-            actual_amount = None
-            actual_exec_price = price
-            if order_id:
-                time.sleep(0.5)
-                order_detail = self.api.get_order(order_id)
-                if order_detail:
-                    executed_funds = float(order_detail.get('executed_funds', 0) or 0)
-                    executed_vol = float(order_detail.get('executed_volume', 0) or 0)
-                    if executed_funds > 0:
-                        actual_amount = executed_funds
-                        if executed_vol > 0:
-                            actual_exec_price = executed_funds / executed_vol
-                        logger.info(f"[{coin}] 실제 체결: {executed_funds:,.0f}원")
 
-            sell_amount = actual_amount if actual_amount else actual_qty * price
-            # 수수료 차감: 매수 0.04% + 매도 0.04% = 왕복 0.08%
-            fee_krw = (pos.total_amount + sell_amount) * FEE_RATE
-            pnl_krw = sell_amount - pos.total_amount - fee_krw
-            pnl_pct = pnl_krw / pos.total_amount * 100
-            trade_logger.log_trade(coin, "매도", actual_exec_price, actual_qty,
-                                   sell_amount, pnl_pct, reason)
-            self.daily_pnl_krw += pnl_krw
-            self.positions.pop(coin, None)
-            self._update_ws_subscriptions()
+        order_id = result.get('order_id') or result.get('uuid')
+        actual_amount = None
+        actual_exec_price = price
+        if order_id:
+            time.sleep(0.5)
+            order_detail = self.api.get_order(order_id)
+            if order_detail:
+                executed_funds = float(order_detail.get('executed_funds', 0) or 0)
+                executed_vol = float(order_detail.get('executed_volume', 0) or 0)
+                if executed_funds > 0:
+                    actual_amount = executed_funds
+                    if executed_vol > 0:
+                        actual_exec_price = executed_funds / executed_vol
+                    logger.info(f"[{coin}] 실제 체결: {executed_funds:,.0f}원")
 
-            # 연속 손실 서킷 브레이커
-            if pnl_krw < 0:
-                self.consecutive_losses += 1
-                if self.consecutive_losses >= CONSECUTIVE_LOSS_LIMIT:
-                    pause_secs = CONSECUTIVE_LOSS_PAUSE_HOURS * 3600
-                    self.consecutive_loss_pause_until = time.time() + pause_secs
-                    logger.warning(f"[서킷 브레이커] 연속 {self.consecutive_losses}회 손실 "
-                                   f"→ {CONSECUTIVE_LOSS_PAUSE_HOURS}시간 매수 중단")
-            else:
-                self.consecutive_losses = 0  # 익절 시 초기화
+        sell_amount = actual_amount if actual_amount else actual_qty * price
+        # 수수료 차감: 매수 0.04% + 매도 0.04% = 왕복 0.08%
+        fee_krw = (pos.total_amount + sell_amount) * FEE_RATE
+        pnl_krw = sell_amount - pos.total_amount - fee_krw
+        pnl_pct = pnl_krw / pos.total_amount * 100
+        trade_logger.log_trade(coin, "매도", actual_exec_price, actual_qty,
+                               sell_amount, pnl_pct, reason)
+        self.daily_pnl_krw += pnl_krw
+        self.positions.pop(coin, None)
+        self._update_ws_subscriptions()
 
-            cooldown = COOLDOWN_AFTER_STOP_LOSS if is_stop_loss else COOLDOWN_AFTER_TAKE_PROFIT
-            self.sell_cooldown[coin] = time.time() + cooldown
-            cooldown_label = "1시간" if is_stop_loss else "4시간"
+        # 연속 손실 서킷 브레이커
+        if pnl_krw < 0:
+            self.consecutive_losses += 1
+            if self.consecutive_losses >= CONSECUTIVE_LOSS_LIMIT:
+                pause_secs = CONSECUTIVE_LOSS_PAUSE_HOURS * 3600
+                self.consecutive_loss_pause_until = time.time() + pause_secs
+                logger.warning(f"[서킷 브레이커] 연속 {self.consecutive_losses}회 손실 "
+                               f"→ {CONSECUTIVE_LOSS_PAUSE_HOURS}시간 매수 중단")
+        else:
+            self.consecutive_losses = 0  # 익절 시 초기화
 
-            if is_stop_loss:
-                self.daily_coin_stops[coin] = self.daily_coin_stops.get(coin, 0) + 1
-                stops_today = self.daily_coin_stops[coin]
-                if stops_today >= DAILY_COIN_STOP_LIMIT:
-                    logger.warning(f"[당일 블랙리스트] {coin} | 오늘 손절 {stops_today}회 → 오늘 재매수 금지")
+        cooldown = COOLDOWN_AFTER_STOP_LOSS if is_stop_loss else COOLDOWN_AFTER_TAKE_PROFIT
+        self.sell_cooldown[coin] = time.time() + cooldown
+        cooldown_label = "1시간" if is_stop_loss else "4시간"
 
-            logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}% ({pnl_krw:+,.0f}원) "
-                        f"| 오늘 누적: {self.daily_pnl_krw:+,.0f}원 | 쿨다운: {cooldown_label}")
-            notifier.notify_sell(coin, actual_exec_price, int(sell_amount), pnl_pct, pnl_krw, reason)
+        if is_stop_loss:
+            self.daily_coin_stops[coin] = self.daily_coin_stops.get(coin, 0) + 1
+            stops_today = self.daily_coin_stops[coin]
+            if stops_today >= DAILY_COIN_STOP_LIMIT:
+                logger.warning(f"[당일 블랙리스트] {coin} | 오늘 손절 {stops_today}회 → 오늘 재매수 금지")
+
+        logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}% ({pnl_krw:+,.0f}원) "
+                    f"| 오늘 누적: {self.daily_pnl_krw:+,.0f}원 | 쿨다운: {cooldown_label}")
+        notifier.notify_sell(coin, actual_exec_price, int(sell_amount), pnl_pct, pnl_krw, reason)
 
     # ===== 텔레그램 신호 처리 =====
 
