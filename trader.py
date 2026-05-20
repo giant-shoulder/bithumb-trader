@@ -78,7 +78,7 @@ class AutoTrader:
         self.is_running = False
         self.dry_run = dry_run
         self.daily_pnl_krw = 0.0
-        self.daily_reset_date = datetime.now().date()
+        self.daily_reset_date = datetime.now(KST).date()  # KST 기준 (UTC 아님)
         self.telegram_queue: queue.Queue = queue.Queue()
 
         self.pending_signals: dict = {}  # 미사용 (즉시 진입 방식)
@@ -284,6 +284,15 @@ class AutoTrader:
 
     def _process_hot_buys(self):
         """WebSocket 급등 감지 큐 처리 - AT 신호 확인 후 즉시 매수"""
+        # 서킷 브레이커 중에는 ws_surge도 차단
+        if time.time() < self.consecutive_loss_pause_until:
+            while not self._hot_buy_queue.empty():
+                try:
+                    self._hot_buy_queue.get_nowait()
+                except queue.Empty:
+                    break
+            return
+
         while not self._hot_buy_queue.empty():
             try:
                 coin, ws_price, change_pct = self._hot_buy_queue.get_nowait()
@@ -322,7 +331,7 @@ class AutoTrader:
     # ===== 일일 손실 한도 =====
 
     def _check_daily_loss_limit(self) -> bool:
-        today = datetime.now().date()
+        today = datetime.now(KST).date()  # KST 기준 일일 초기화 (UTC midnight = KST 09:00 버그 방지)
         if today != self.daily_reset_date:
             self.daily_pnl_krw = 0.0
             self.daily_coin_stops = {}
