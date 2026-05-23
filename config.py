@@ -38,7 +38,7 @@ MA_LONG = 120     # 장기
 AT_PERIOD = 13            # AlphaTrend RSI/ATR 기간
 AT_MULTIPLIER = 1.5       # ATR 승수 (지지/저항선 폭) - 표준 AlphaTrend 1.0~3.0
 PULLBACK_MAX_CANDLES = 10  # 눌림목 대기 최대 캔들 수 (5분봉 기준 50분)
-STOP_LOSS_MIN_PCT = 0.5   # 손절폭 최솟값 (%)
+STOP_LOSS_MIN_PCT = 0.8   # 손절폭 최솟값 (%) - 0.5→0.8: whipsaw 손절 방지 (2026-05 회고)
 STOP_LOSS_MAX_PCT = 2.5   # 손절폭 최댓값 (%)
 RR_RATIO = 1.5            # 손익비 (Risk:Reward 1:1.5)
 AT_NOISE_EXIT = True      # AT yellow 구간 즉시 청산
@@ -55,7 +55,7 @@ BUY_UNIT_KRW = 30000         # 1회 매수 금액
 MAX_CONCURRENT_POSITIONS = 3  # 최대 동시 포지션 수
 
 # ===== 최소 가격 =====
-MIN_PRICE_KRW = 300          # 최소 코인 가격 (원) - 300원 미만 슬리피지/스프레드 손실 과다
+MIN_PRICE_KRW = 500          # 최소 코인 가격 (원) - 300→500: 저가 코인 스프레드/슬리피지 손실 과다 (2026-05 회고)
 
 # ===== 매도 후 재매수 금지 시간 =====
 COOLDOWN_AFTER_STOP_LOSS = 3600    # 손절 후 쿨다운 (초) - 1시간
@@ -82,7 +82,7 @@ HIGHER_TF_CANDLE = "30m"      # 진입 확인용 상위 타임프레임
 HIGHER_TF_COUNT = 60          # 상위 TF 캔들 개수
 
 # ===== 연속 손실 서킷 브레이커 =====
-CONSECUTIVE_LOSS_LIMIT = 4    # 연속 손실 N회 시 매수 중단
+CONSECUTIVE_LOSS_LIMIT = 3    # 연속 손실 N회 시 매수 중단 (4→3: 더 빠른 시장 이탈, 2026-05 회고)
 CONSECUTIVE_LOSS_PAUSE_HOURS = 2  # 연속 손실 후 매수 중단 시간 (시간)
 
 # ===== 루프 설정 =====

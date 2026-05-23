@@ -95,7 +95,7 @@ class AutoTrader:
         self._ws_monitor.start()
         logger.info("=" * 50)
         logger.info("빗섬 자동매매 시스템 시작 (AlphaTrend 리듬 단타)")
-        logger.info(f"설정: 손절 0.5~2.5% | 익절 R:R 1:1.5 | AT red 청산 / yellow 보유 유지")
+        logger.info(f"설정: 손절 0.8~2.5% | 익절 R:R 1:1.5 | AT red 청산 / yellow 보유 유지")
         logger.info(f"설정: 최소가격 {MIN_PRICE_KRW}원 | 거래중단 {TRADING_BLOCK_START}~{TRADING_BLOCK_END}시")
         logger.info(f"설정: 최대 포지션 {MAX_CONCURRENT_POSITIONS}개 | 캔들 {BUY_CANDLE_INTERVAL}")
         logger.info("=" * 50)

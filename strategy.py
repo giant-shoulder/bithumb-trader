@@ -131,16 +131,19 @@ class AlphaTrendStrategy:
             result['reason'] = f'현재 AT {colors[-1]} (진입 금지)'
             return result
 
-        # ① 직전 완성 캔들도 green이어야 함 (AT 안정성 확인 - whipsaw 방지)
+        # ① 직전 2개 완성 캔들 모두 green이어야 함 (AT 안정성 강화 - 2026-05 회고: 2→3캔들)
         if colors[-2] != 'green':
             result['reason'] = f'AT green 불안정 (직전 캔들 {colors[-2]}, whipsaw 방지)'
             return result
+        if colors[-3] != 'green':
+            result['reason'] = f'AT green 불안정 (2캔들 전 {colors[-3]}, 추세 미확인)'
+            return result
 
-        # ① RSI 필터: 실제 모멘텀 확인 (45~70 범위만 진입)
+        # ① RSI 필터: 실제 모멘텀 확인 (50~68 범위만 진입, 2026-05 회고: 45~70→50~68 강화)
         rsi_series = self._calc_rsi_series(df)
         rsi = rsi_series.iloc[-1]
-        if pd.isna(rsi) or rsi < 45 or rsi > 70:
-            result['reason'] = f'RSI {rsi:.1f} (진입 가능: 45~70, 모멘텀 부족 또는 과매수)'
+        if pd.isna(rsi) or rsi < 50 or rsi > 68:
+            result['reason'] = f'RSI {rsi:.1f} (진입 가능: 50~68, 모멘텀 부족 또는 과매수)'
             return result
 
         # ② 최근 PULLBACK_MAX_CANDLES 완성 캔들 내 눌림목(음봉) 탐색
@@ -173,8 +176,8 @@ class AlphaTrendStrategy:
         # 현재 형성 중인 양봉의 거래량이 최근 20봉 평균의 70% 이상이어야 진입
         cur_vol = df['volume'].iloc[-1]
         avg_vol = df['volume'].iloc[-21:-1].mean()
-        if avg_vol > 0 and cur_vol < avg_vol * 0.7:
-            result['reason'] = (f'반등 거래량 부족 (현재 {cur_vol:.0f} < 평균 {avg_vol:.0f}의 70%) '
+        if avg_vol > 0 and cur_vol < avg_vol * 1.0:
+            result['reason'] = (f'반등 거래량 부족 (현재 {cur_vol:.0f} < 평균 {avg_vol:.0f}의 100%) '
                                 f'→ 약한 반등')
             return result
 
