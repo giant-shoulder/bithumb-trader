@@ -414,8 +414,15 @@ class AutoTrader:
                                     f"손익={pnl_pct:+.1f}% | {signal['reason']}")
                         coins_to_sell.append((coin, pos, current_price, signal))
                         continue
+                    elif completed_color == 'yellow' and pnl_pct > 0:
+                        # AT yellow + 수익 중 → 수익 보전 청산 (수익 구간에서 횡보 진입 시 빠져나옴)
+                        signal = {'sell': True, 'reason': f'AT yellow 수익 보전 ({pnl_pct:+.1f}%)', 'is_stop_loss': False}
+                        logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
+                                    f"손익={pnl_pct:+.1f}% | {signal['reason']}")
+                        coins_to_sell.append((coin, pos, current_price, signal))
+                        continue
                     else:
-                        # AT yellow/green → 보유 유지 (WS 손절/익절 또는 60분 시간청산에 위임)
+                        # AT yellow(손실) 또는 green → 보유 유지 (WS 손절/익절 또는 60분 시간청산에 위임)
                         stop_str = f"{pos.stop_loss_price:,.0f}" if pos.stop_loss_price > 0 else "미설정"
                         take_str = f"{pos.take_profit_price:,.0f}" if pos.take_profit_price > 0 else "미설정"
                         logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
