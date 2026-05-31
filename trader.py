@@ -24,7 +24,7 @@ from config import (
     MIN_POSITION_KRW,
     PRIORITY_COINS,
     MAX_CONCURRENT_POSITIONS,
-    MIN_PRICE_KRW,
+    MIN_PRICE_KRW, MAX_SPREAD_PCT,
     TRADING_BLOCK_START, TRADING_BLOCK_END,
     BUY_CANDLE_INTERVAL, BUY_CANDLE_COUNT,
     COIN_BLACKLIST,
@@ -736,9 +736,18 @@ class AutoTrader:
             logger.info(f"[매수 차단] {coin} | 거래시간 외 ({now_kst.strftime('%H:%M')} KST)")
             return
 
-        if price < MIN_PRICE_KRW:
-            logger.info(f"[매수 차단] {coin} | 가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원")
-            return
+        # 호가 스프레드 체크 (저가 코인 슬리피지 방지)
+        orderbook = self.api.get_orderbook(coin)
+        if orderbook:
+            units = orderbook.get('orderbook_units', [])
+            if units:
+                ask1 = units[0]['ask_price']  # 매도1호가
+                bid1 = units[0]['bid_price']  # 매수1호가
+                spread_pct = (ask1 - bid1) / bid1 * 100
+                if spread_pct > MAX_SPREAD_PCT:
+                    logger.info(f"[매수 차단] {coin} | 스프레드 {spread_pct:.1f}% > {MAX_SPREAD_PCT}% "
+                                f"(매수1={bid1:,.0f} 매도1={ask1:,.0f})")
+                    return
 
         if coin in self.positions:
             logger.info(f"[매수 차단] {coin} | 이미 보유 중")
