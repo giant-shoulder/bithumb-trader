@@ -176,9 +176,9 @@ class AlphaTrendStrategy:
         # 현재 형성 중인 양봉의 거래량이 최근 20봉 평균의 70% 이상이어야 진입
         cur_vol = df['volume'].iloc[-1]
         avg_vol = df['volume'].iloc[-21:-1].mean()
-        if avg_vol > 0 and cur_vol < avg_vol * 1.0:
-            result['reason'] = (f'반등 거래량 부족 (현재 {cur_vol:.0f} < 평균 {avg_vol:.0f}의 100%) '
-                                f'→ 약한 반등')
+        if avg_vol > 0 and cur_vol < avg_vol * 0.7:
+            result['reason'] = (f'반등 거래량 부족 (현재 {cur_vol:.0f} < 평균 {avg_vol:.0f}의 70%) '
+                                f'→ 약한 반등 (100%→70%: 형성 중 캔들 거래량 현실 반영, 2026-06 회고)')
             return result
 
         # ⑤ 손절/익절 계산 (수수료 0.08% 왕복 반영)

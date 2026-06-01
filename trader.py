@@ -414,7 +414,7 @@ class AutoTrader:
                                     f"손익={pnl_pct:+.1f}% | {signal['reason']}")
                         coins_to_sell.append((coin, pos, current_price, signal))
                         continue
-                    elif completed_color == 'yellow' and pnl_pct > 0:
+                    elif completed_color == 'yellow' and pnl_pct > FEE_ROUND_TRIP * 100:
                         # AT yellow + 수익 중 → 수익 보전 청산 (수익 구간에서 횡보 진입 시 빠져나옴)
                         signal = {'sell': True, 'reason': f'AT yellow 수익 보전 ({pnl_pct:+.1f}%)', 'is_stop_loss': False}
                         logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
