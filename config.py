@@ -53,8 +53,9 @@ RSI_PERIOD = 14
 MOMENTUM_KILL_RANK = 50   # 이 순위 밖이면 모멘텀 소멸로 판단
 
 # ===== 매수 실행 =====
-MAX_POSITION_KRW = 1000000   # 코인당 최대 투자금액 (원)
-BUY_UNIT_KRW = 30000         # 1회 매수 금액
+MAX_POSITION_KRW = 1000000   # 코인당 최대 투자금액 (원) - 1회 매수 상한으로도 적용
+# 1회 매수 금액: 보유 KRW 잔고 전액 (수수료/슬리피지 여유 0.5% 제외, MAX_POSITION_KRW 상한)
+# 고정 3만원(BUY_UNIT_KRW) → 잔고 최대치 매수로 변경 (2026-06-11 사용자 요청)
 MAX_CONCURRENT_POSITIONS = 3  # 최대 동시 포지션 수
 
 # ===== 최소 가격 / 스프레드 =====

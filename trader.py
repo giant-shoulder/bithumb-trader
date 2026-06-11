@@ -14,7 +14,7 @@ from logger import get_logger, TradeLogger
 from ws_price_monitor import WSPriceMonitor
 import notifier
 from config import (
-    MAX_POSITION_KRW, BUY_UNIT_KRW,
+    MAX_POSITION_KRW,
     POLLING_INTERVAL_IDLE, POLLING_INTERVAL_ACTIVE,
     MOMENTUM_TOP_N, MIN_VOLUME_24H_KRW,
     COOLDOWN_AFTER_STOP_LOSS, COOLDOWN_AFTER_TAKE_PROFIT,
@@ -824,7 +824,8 @@ class AutoTrader:
             logger.warning(f"[매수 차단] {coin} | 잔고 부족 ({krw_balance:,.0f}원 < 최소 {MIN_BUY_KRW:,}원)")
             return
 
-        krw = min(BUY_UNIT_KRW, int(krw_balance * 0.995))
+        # 잔고 전액 매수 (수수료/슬리피지 여유 0.5% 제외, 코인당 상한 적용)
+        krw = min(MAX_POSITION_KRW, int(krw_balance * 0.995))
         logger.info(f"[매수 실행] {coin} | {krw:,.0f}원 | 손절={stop_loss_price:,.0f} 익절={take_profit_price:,.0f}")
 
         if self.dry_run:
