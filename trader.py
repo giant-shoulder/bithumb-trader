@@ -38,6 +38,8 @@ from config import (
     HIGHER_TF_CANDLE, HIGHER_TF_COUNT,
     CONSECUTIVE_LOSS_LIMIT, CONSECUTIVE_LOSS_PAUSE_HOURS,
     TRAILING_STOP_TRIGGER_PCT, TRAILING_STOP_TRAIL_PCT,
+    BREAKEVEN_TRIGGER_PCT, BREAKEVEN_STOP_PCT,
+    PARTIAL_TP_RR, PARTIAL_TP_RATIO,
 )
 
 KST = timezone(timedelta(hours=9))
@@ -61,6 +63,9 @@ class Position:
     entry_time: str = ""
     highest_price: float = 0.0      # 보유 중 최고가 (트레일링 스탑용)
     trailing_active: bool = False    # 트레일링 스탑 활성화 여부
+    partial_tp_price: float = 0.0    # 1차 부분 익절가 (R:R 1.0 기준)
+    partial_tp_done: bool = False    # 1차 부분 익절 완료 여부
+    breakeven_active: bool = False   # 본전 스탑 활성화 여부
 
     def __post_init__(self):
         self.entry_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -95,7 +100,8 @@ class AutoTrader:
         self._ws_monitor.start()
         logger.info("=" * 50)
         logger.info("빗섬 자동매매 시스템 시작 (AlphaTrend 리듬 단타)")
-        logger.info(f"설정: 손절 0.8~2.5% | 익절 R:R 1:1.5 | AT red 청산 / yellow 보유 유지")
+        logger.info(f"설정: 손절 0.8~2.5% | 본전스탑 +{BREAKEVEN_TRIGGER_PCT}%→+{BREAKEVEN_STOP_PCT}% "
+                    f"| 1차익절 R:R {PARTIAL_TP_RR} {PARTIAL_TP_RATIO:.0%} + 잔량 트레일링")
         logger.info(f"설정: 최소가격 {MIN_PRICE_KRW}원 | 거래중단 {TRADING_BLOCK_START}~{TRADING_BLOCK_END}시")
         logger.info(f"설정: 최대 포지션 {MAX_CONCURRENT_POSITIONS}개 | 캔들 {BUY_CANDLE_INTERVAL}")
         logger.info("=" * 50)
@@ -219,13 +225,26 @@ class AutoTrader:
     # ===== WebSocket 실시간 가격 모니터 =====
 
     def _on_ws_price(self, coin: str, price: float):
-        """WebSocket 실시간 가격 콜백 - 손절/익절 + 트레일링 스탑"""
+        """WebSocket 실시간 가격 콜백 - 본전스탑/트레일링/부분익절/손절익절"""
         pos = self.positions.get(coin)
         if not pos:
             return
 
-        # 트레일링 스탑: 수익이 TRIGGER_PCT 이상일 때 고점 추적 → 손절가 동적 상향
         profit_pct = (price - pos.buy_price) / pos.buy_price * 100
+
+        # 본전 스탑: +0.5% 도달 시 손절가를 매수가 +0.2%로 상향
+        # → 수익 갔던 포지션이 풀 손절(-0.8~-2.5%)로 끝나는 무방비 구간 제거
+        # (stop 미설정 기존 포지션은 제외: 수동 보유 의도일 수 있음)
+        if (not pos.breakeven_active and pos.stop_loss_price > 0
+                and profit_pct >= BREAKEVEN_TRIGGER_PCT):
+            be_stop = pos.buy_price * (1 + BREAKEVEN_STOP_PCT / 100)
+            if be_stop > pos.stop_loss_price:
+                pos.stop_loss_price = be_stop
+                logger.info(f"[본전 스탑] {coin} | 수익 {profit_pct:+.2f}% "
+                            f"→ 손절가 {be_stop:,.0f}원(+{BREAKEVEN_STOP_PCT}%) 상향")
+            pos.breakeven_active = True
+
+        # 트레일링 스탑: 수익이 TRIGGER_PCT 이상일 때 고점 추적 → 손절가 동적 상향
         if profit_pct >= TRAILING_STOP_TRIGGER_PCT:
             if price > pos.highest_price:
                 pos.highest_price = price
@@ -234,6 +253,22 @@ class AutoTrader:
                 trail_stop = pos.highest_price * (1 - TRAILING_STOP_TRAIL_PCT / 100)
                 if trail_stop > pos.stop_loss_price:
                     pos.stop_loss_price = trail_stop
+
+        # 1차 부분 익절: R:R 1.0 도달 시 절반 익절 확정, 잔량은 트레일링 러너로 전환
+        if (not pos.partial_tp_done and pos.partial_tp_price > 0
+                and price >= pos.partial_tp_price):
+            pos.partial_tp_done = True
+            pos.take_profit_price = 0.0  # 고정 익절가 해제 → 잔량은 트레일링이 고점 추적
+            ratio = PARTIAL_TP_RATIO
+            if pos.total_amount * (1 - ratio) < MIN_POSITION_KRW:
+                ratio = 1.0  # 잔량이 더스트 수준이면 전량 익절
+            reason = (f'1차 익절: {price:,.0f}원 >= {pos.partial_tp_price:,.0f}원 '
+                      f'({ratio:.0%} 매도)')
+            logger.info(f"[WS 부분 익절] {coin} | {reason}")
+            if ratio >= 1.0:
+                self.positions.pop(coin, None)
+            self._ws_sell_queue.put((coin, pos, price, reason, False, ratio))
+            return
 
         # stop/take 미설정 포지션 (기존 포지션)은 스킵
         if pos.stop_loss_price <= 0 and pos.take_profit_price <= 0:
@@ -245,20 +280,24 @@ class AutoTrader:
         if result['sell']:
             removed = self.positions.pop(coin, None)
             if removed:
-                # 트레일링 스탑 발동 여부를 사유에 반영
+                # 본전 이상으로 올라간 손절가 발동 = 수익 보전 청산 (손절 아님)
                 reason = result['reason']
-                if result['is_stop_loss'] and removed.trailing_active:
-                    reason = f"트레일링 스탑 (고점 {removed.highest_price:,.0f}원 → 손절 {removed.stop_loss_price:,.0f}원)"
-                    result['is_stop_loss'] = False  # 수익 구간에서 트레일링 청산 = 손절 아님
+                if result['is_stop_loss'] and removed.stop_loss_price >= removed.buy_price:
+                    if removed.trailing_active:
+                        reason = (f"트레일링 스탑 (고점 {removed.highest_price:,.0f}원 "
+                                  f"→ 청산 {removed.stop_loss_price:,.0f}원)")
+                    else:
+                        reason = f"본전 스탑 (청산가 {removed.stop_loss_price:,.0f}원 ≥ 매수가)"
+                    result['is_stop_loss'] = False
                 logger.info(f"[WS 즉시 매도] {coin} | {reason}")
-                self._ws_sell_queue.put((coin, removed, price, reason, result['is_stop_loss']))
+                self._ws_sell_queue.put((coin, removed, price, reason, result['is_stop_loss'], 1.0))
 
     def _process_ws_sells(self):
         """WebSocket 트리거 매도 큐 처리 (1초마다 메인 루프에서 호출)"""
         while not self._ws_sell_queue.empty():
             try:
-                coin, pos, price, reason, is_stop_loss = self._ws_sell_queue.get_nowait()
-                self._execute_sell(coin, pos, price, reason, is_stop_loss)
+                coin, pos, price, reason, is_stop_loss, ratio = self._ws_sell_queue.get_nowait()
+                self._execute_sell(coin, pos, price, reason, is_stop_loss, sell_ratio=ratio)
             except queue.Empty:
                 break
 
@@ -456,10 +495,15 @@ class AutoTrader:
     # ===== 매도 실행 =====
 
     def _execute_sell(self, coin: str, pos: Position, price: float, reason: str,
-                      is_stop_loss: bool = False):
+                      is_stop_loss: bool = False, sell_ratio: float = 1.0):
+        is_partial = sell_ratio < 1.0
         logger.info(f"[매도 실행] {coin} | 사유: {reason}")
         if self.dry_run:
-            logger.info(f"[DRY] 매도 생략: {coin} {pos.quantity}")
+            logger.info(f"[DRY] 매도 생략: {coin} {pos.quantity} (비율 {sell_ratio:.0%})")
+            if is_partial:
+                pos.quantity *= (1 - sell_ratio)
+                pos.total_amount *= (1 - sell_ratio)
+                return
             self.positions.pop(coin, None)
             cooldown = COOLDOWN_AFTER_STOP_LOSS if is_stop_loss else COOLDOWN_AFTER_TAKE_PROFIT
             self.sell_cooldown[coin] = time.time() + cooldown
@@ -478,10 +522,15 @@ class AutoTrader:
                 notifier.notify_sell(coin, price, 0, 0.0, 0.0, f"⚠️ 매도 불가 - 잔고 없음 ({reason})")
                 return
 
-        result = self.api.sell_market(coin, actual_qty)
+        sell_qty = actual_qty * sell_ratio if is_partial else actual_qty
+        cost_basis = pos.total_amount * sell_ratio  # 매도분에 해당하는 매수원금
+
+        result = self.api.sell_market(coin, sell_qty)
         if not result:
             logger.error(f"[매도 실패] {coin} | 시장가 매도 API 오류 → 알림 전송")
-            est_amount = int(actual_qty * price)
+            if is_partial:
+                pos.partial_tp_done = False  # 다음 틱에서 부분 익절 재시도
+            est_amount = int(sell_qty * price)
             notifier.notify_sell(coin, price, est_amount, 0.0, 0.0, f"⚠️ 매도 API 실패 ({reason})")
             return
 
@@ -500,14 +549,27 @@ class AutoTrader:
                         actual_exec_price = executed_funds / executed_vol
                     logger.info(f"[{coin}] 실제 체결: {executed_funds:,.0f}원")
 
-        sell_amount = actual_amount if actual_amount else actual_qty * price
-        # 수수료 차감: 매수 0.04% + 매도 0.04% = 왕복 0.08%
-        fee_krw = (pos.total_amount + sell_amount) * FEE_RATE
-        pnl_krw = sell_amount - pos.total_amount - fee_krw
-        pnl_pct = pnl_krw / pos.total_amount * 100
-        trade_logger.log_trade(coin, "매도", actual_exec_price, actual_qty,
+        sell_amount = actual_amount if actual_amount else sell_qty * price
+        # 수수료 차감: 매수 0.04% + 매도 0.04% = 왕복 0.08% (부분 매도 시 해당 비율분만)
+        fee_krw = (cost_basis + sell_amount) * FEE_RATE
+        pnl_krw = sell_amount - cost_basis - fee_krw
+        pnl_pct = pnl_krw / cost_basis * 100
+        trade_logger.log_trade(coin, "매도", actual_exec_price, sell_qty,
                                sell_amount, pnl_pct, reason)
         self.daily_pnl_krw += pnl_krw
+
+        if is_partial:
+            # 잔량 포지션 유지: 쿨다운/서킷브레이커/당일손절 카운트 미적용
+            pos.quantity = max(actual_qty - sell_qty, 0.0)
+            pos.total_amount = max(pos.total_amount - cost_basis, 0.0)
+            if pnl_krw >= 0:
+                self.consecutive_losses = 0
+            logger.info(f"[부분 익절 완료] {coin} | 손익: {pnl_pct:+.1f}% ({pnl_krw:+,.0f}원) "
+                        f"| 잔량 {pos.quantity:.6f}개 ({pos.total_amount:,.0f}원) 트레일링 추적 중 "
+                        f"| 오늘 누적: {self.daily_pnl_krw:+,.0f}원")
+            notifier.notify_sell(coin, actual_exec_price, int(sell_amount), pnl_pct, pnl_krw, reason)
+            return
+
         self.positions.pop(coin, None)
         self._update_ws_subscriptions()
 
@@ -524,7 +586,7 @@ class AutoTrader:
 
         cooldown = COOLDOWN_AFTER_STOP_LOSS if is_stop_loss else COOLDOWN_AFTER_TAKE_PROFIT
         self.sell_cooldown[coin] = time.time() + cooldown
-        cooldown_label = "1시간" if is_stop_loss else "4시간"
+        cooldown_label = f"{cooldown / 3600:.0f}시간"
 
         if is_stop_loss:
             self.daily_coin_stops[coin] = self.daily_coin_stops.get(coin, 0) + 1
@@ -772,6 +834,11 @@ class AutoTrader:
         result = self.api.buy_market(coin, krw)
         if result:
             quantity = krw / price
+            # 1차 부분 익절가: R:R 1.0 + 왕복 수수료 (도달 시 절반 익절, 잔량 트레일링)
+            risk = price - stop_loss_price
+            partial_tp_price = 0.0
+            if stop_loss_price > 0 and risk > 0:
+                partial_tp_price = price + risk * PARTIAL_TP_RR + price * FEE_ROUND_TRIP
             self.positions[coin] = Position(
                 coin=coin,
                 buy_price=price,
@@ -779,6 +846,7 @@ class AutoTrader:
                 stop_loss_price=stop_loss_price,
                 take_profit_price=take_profit_price,
                 total_amount=krw,
+                partial_tp_price=partial_tp_price,
             )
             trade_logger.log_trade(coin, "매수", price, quantity, krw, reason="AT 눌림목 반등", source=source)
             logger.info(f"[매수 완료] {coin} | 가격={price:,.0f} 금액={krw:,.0f}원 [{source}]")
