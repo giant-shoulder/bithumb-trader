@@ -3,6 +3,7 @@
 AlphaTrend 리듬 단타 전략 (제이슨 노아 방법론)
 3단계: 확인(AT green) → 반응(눌림목 대기) → 진입(반등 양봉)
 """
+import math
 import time
 import queue
 import threading
@@ -38,7 +39,7 @@ from config import (
     HIGHER_TF_CANDLE, HIGHER_TF_COUNT,
     CONSECUTIVE_LOSS_LIMIT, CONSECUTIVE_LOSS_PAUSE_HOURS,
     TRAILING_STOP_TRIGGER_PCT, TRAILING_STOP_TRAIL_PCT,
-    BREAKEVEN_TRIGGER_PCT, BREAKEVEN_STOP_PCT,
+    BREAKEVEN_TRIGGER_PCT, BREAKEVEN_STOP_PCT, BREAKEVEN_MIN_TICKS,
     PARTIAL_TP_RR, PARTIAL_TP_RATIO,
 )
 
@@ -49,6 +50,24 @@ trade_logger = TradeLogger()
 
 # 5분봉 캔들 길이(초) - 눌림목 대기 타임아웃 계산용
 _CANDLE_SECS = 5 * 60
+
+
+def _tick_size(price: float) -> float:
+    """빗썸 KRW 마켓 호가 단위 (2026-06-12 호가창 실측: ADA/JTO/ONDO/DOT/NEAR 1원,
+    AVAX/LINK 10원, AAVE 50원, SOL/TAO/BCH 100원, ETH 1,000원)"""
+    if price < 5_000:
+        return 1
+    if price < 10_000:
+        return 5
+    if price < 50_000:
+        return 10
+    if price < 100_000:
+        return 50
+    if price < 500_000:
+        return 100
+    if price < 1_000_000:
+        return 500
+    return 1_000
 
 
 @dataclass
@@ -237,11 +256,17 @@ class AutoTrader:
         # (stop 미설정 기존 포지션은 제외: 수동 보유 의도일 수 있음)
         if (not pos.breakeven_active and pos.stop_loss_price > 0
                 and profit_pct >= BREAKEVEN_TRIGGER_PCT):
-            be_stop = pos.buy_price * (1 + BREAKEVEN_STOP_PCT / 100)
+            # % 버퍼와 최소 2틱 중 큰 값을 틱 경계로 올림
+            # (537원 코인: 0.2% = 1.07원이 틱 절사로 0틱이 되어 수수료만 남던 문제 방지)
+            tick = _tick_size(pos.buy_price)
+            be_stop = max(pos.buy_price * (1 + BREAKEVEN_STOP_PCT / 100),
+                          pos.buy_price + BREAKEVEN_MIN_TICKS * tick)
+            be_stop = math.ceil(be_stop / tick) * tick
             if be_stop > pos.stop_loss_price:
                 pos.stop_loss_price = be_stop
+                locked_pct = (be_stop / pos.buy_price - 1) * 100
                 logger.info(f"[본전 스탑] {coin} | 수익 {profit_pct:+.2f}% "
-                            f"→ 손절가 {be_stop:,.0f}원(+{BREAKEVEN_STOP_PCT}%) 상향")
+                            f"→ 손절가 {be_stop:,.0f}원(+{locked_pct:.2f}%, 틱={tick:g}) 상향")
             pos.breakeven_active = True
 
         # 트레일링 스탑: 수익이 TRIGGER_PCT 이상일 때 고점 추적 → 손절가 동적 상향
