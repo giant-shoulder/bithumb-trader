@@ -834,24 +834,42 @@ class AutoTrader:
 
         result = self.api.buy_market(coin, krw)
         if result:
-            quantity = krw / price
-            # 1차 부분 익절가: R:R 1.0 + 왕복 수수료 (도달 시 절반 익절, 잔량 트레일링)
-            risk = price - stop_loss_price
+            # 실제 평균 체결가 조회 (ticker 가격은 직전 체결가 ≈ bid → 시장가 매수는 ask 체결)
+            # 기록가-체결가 0.2~0.5% 오차가 본전스탑/트레일링/손익 계산을 왜곡 (2026-06-12 NEAR 케이스)
+            actual_price, quantity, spent = price, krw / price, float(krw)
+            order_id = result.get('order_id') or result.get('uuid')
+            if order_id:
+                time.sleep(0.5)
+                order_detail = self.api.get_order(order_id)
+                if order_detail:
+                    executed_funds = float(order_detail.get('executed_funds', 0) or 0)
+                    executed_vol = float(order_detail.get('executed_volume', 0) or 0)
+                    if executed_funds > 0 and executed_vol > 0:
+                        actual_price = executed_funds / executed_vol
+                        quantity = executed_vol
+                        spent = executed_funds
+                        slip_pct = (actual_price - price) / price * 100
+                        logger.info(f"[{coin}] 실제 매수 체결: {actual_price:,.2f}원 "
+                                    f"(주문가 대비 {slip_pct:+.2f}%) | {quantity:.6f}개 {spent:,.0f}원")
+
+            # 1차 부분 익절가: R:R 1.0 + 왕복 수수료 (실제 체결가 기준)
+            risk = actual_price - stop_loss_price
             partial_tp_price = 0.0
             if stop_loss_price > 0 and risk > 0:
-                partial_tp_price = price + risk * PARTIAL_TP_RR + price * FEE_ROUND_TRIP
+                partial_tp_price = actual_price + risk * PARTIAL_TP_RR + actual_price * FEE_ROUND_TRIP
+
             self.positions[coin] = Position(
                 coin=coin,
-                buy_price=price,
+                buy_price=actual_price,
                 quantity=quantity,
                 stop_loss_price=stop_loss_price,
                 take_profit_price=take_profit_price,
-                total_amount=krw,
+                total_amount=spent,
                 partial_tp_price=partial_tp_price,
             )
-            trade_logger.log_trade(coin, "매수", price, quantity, krw, reason="AT 눌림목 반등", source=source)
-            logger.info(f"[매수 완료] {coin} | 가격={price:,.0f} 금액={krw:,.0f}원 [{source}]")
-            notifier.notify_buy(coin, price, krw, 1, 1, source)
+            trade_logger.log_trade(coin, "매수", actual_price, quantity, spent, reason="AT 눌림목 반등", source=source)
+            logger.info(f"[매수 완료] {coin} | 가격={actual_price:,.2f} 금액={spent:,.0f}원 [{source}]")
+            notifier.notify_buy(coin, actual_price, int(spent), 1, 1, source)
             self._update_ws_subscriptions()
 
     # ===== 상태 조회 =====
