@@ -42,7 +42,10 @@ AT_PERIOD = 13            # AlphaTrend RSI/ATR 기간
 AT_MULTIPLIER = 1.5       # ATR 승수 (지지/저항선 폭) - 표준 AlphaTrend 1.0~3.0
 PULLBACK_MAX_CANDLES = 10  # 눌림목 대기 최대 캔들 수 (5분봉 기준 50분)
 STOP_LOSS_MIN_PCT = 0.8   # 손절폭 최솟값 (%) - 0.5→0.8: whipsaw 손절 방지 (2026-05 회고)
-STOP_LOSS_MAX_PCT = 2.5   # 손절폭 최댓값 (%)
+# 2.5→1.5: 눌림목 저점이 멀면(광폭 손절) 1회 손절이 익절 5~6건을 삭제.
+# 평균 익절 +0.3~0.5% 대비 손절 1.5% 초과는 R:R 성립 불가 → 클리핑이 아니라 진입 거부 기준으로 사용
+# (2026-06-13/14 회고: VVV -1.87%손절 -2,182원, ALLO/NEAR 광폭 손절 진입)
+STOP_LOSS_MAX_PCT = 1.5   # 손절폭 최댓값 (%) - 초과 시 진입 거부 (구조적 손절폭 한도)
 RR_RATIO = 1.5            # 손익비 (Risk:Reward 1:1.5)
 AT_NOISE_EXIT = True      # AT yellow 구간 즉시 청산
 

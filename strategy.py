@@ -183,6 +183,13 @@ class AlphaTrendStrategy:
 
         # ⑤ 손절/익절 계산 (수수료 0.08% 왕복 반영)
         raw_stop_pct = (price - pullback_low) / price * 100
+        # 눌림목 저점이 너무 멀면(광폭 손절) 진입 거부: 익절 +0.3~0.5% 대비 R:R 불성립.
+        # 클리핑하면 구조보다 타이트한 손절로 whipsaw, 그대로 두면 1회 손절이 익절 다수를 삭제
+        # (2026-06-13/14 회고: VVV/ALLO/NEAR 광폭 손절 진입 → VVV -2,182원)
+        if raw_stop_pct > STOP_LOSS_MAX_PCT:
+            result['reason'] = (f'손절폭 과대 (눌림목저점 {pullback_low:.0f} = -{raw_stop_pct:.1f}% '
+                                f'> 한도 {STOP_LOSS_MAX_PCT}%) → 지지선 원거리 진입 거부')
+            return result
         stop_pct = max(STOP_LOSS_MIN_PCT, min(STOP_LOSS_MAX_PCT, raw_stop_pct))
         stop_loss_price = price * (1 - stop_pct / 100)
         risk = price - stop_loss_price

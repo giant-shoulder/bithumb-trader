@@ -7,6 +7,7 @@ import math
 import time
 import queue
 import threading
+import pandas as pd
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from bithumb_api import BithumbAPI
@@ -478,8 +479,11 @@ class AutoTrader:
                                     f"손익={pnl_pct:+.1f}% | {signal['reason']}")
                         coins_to_sell.append((coin, pos, current_price, signal))
                         continue
-                    elif completed_color == 'yellow' and pnl_pct > 0.5:
+                    elif completed_color == 'yellow' and pnl_pct > 0.5 and not pos.breakeven_active:
                         # AT yellow + 수익 중 → 수익 보전 청산 (수익 구간에서 횡보 진입 시 빠져나옴)
+                        # 단, 본전스탑 활성(+0.8% 도달) 이후엔 스킵: 손절가가 이미 매수가 위로 올라가 있어
+                        # 하방은 보호되므로 트레일링에 위임해 러너 수익 극대화 (2026-06-13/14 회고:
+                        # 익절이 +0.5% yellow에서 전부 잘려 평균 익절 +0.34% → 손절 -1.26% 대비 페이오프 붕괴)
                         signal = {'sell': True, 'reason': f'AT yellow 수익 보전 ({pnl_pct:+.1f}%)', 'is_stop_loss': False}
                         logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
                                     f"손익={pnl_pct:+.1f}% | {signal['reason']}")
@@ -697,6 +701,13 @@ class AutoTrader:
                 logger.info(f"[텔레그램 탈락] {coin} | AT green 불안정 (직전 {prev_color}, whipsaw 방지)")
                 continue
 
+            # RSI 과매수 추격 차단 (2026-06-13 회고: ALLO RSI 74 텔레그램 추격 매수 → 본전스탑 슬리피지 손실).
+            # 텔레그램은 외부 모멘텀 팁이라 rhythm 상한(68)보다 약간 완화한 70 적용
+            rsi_tg = self.strategy._calc_rsi_series(df).iloc[-1]
+            if pd.notna(rsi_tg) and rsi_tg > 70:
+                logger.info(f"[텔레그램 탈락] {coin} | RSI {rsi_tg:.1f} > 70 (과매수 추격 차단)")
+                continue
+
             # 손절/익절 계산: 최근 눌림목 사용, 없으면 기본 1% 손절 / 1.5% 익절
             from config import STOP_LOSS_MIN_PCT, STOP_LOSS_MAX_PCT, RR_RATIO
             pullback_low = None
@@ -709,6 +720,11 @@ class AutoTrader:
 
             if pullback_low:
                 raw_stop_pct = (price - pullback_low) / price * 100
+                # 광폭 손절(지지선 원거리) 진입 거부 - rhythm 경로와 동일 기준 (2026-06-13/14 회고)
+                if raw_stop_pct > STOP_LOSS_MAX_PCT:
+                    logger.info(f"[텔레그램 탈락] {coin} | 손절폭 과대 (-{raw_stop_pct:.1f}% "
+                                f"> 한도 {STOP_LOSS_MAX_PCT}%, 지지선 원거리)")
+                    continue
                 stop_pct = max(STOP_LOSS_MIN_PCT, min(STOP_LOSS_MAX_PCT, raw_stop_pct))
             else:
                 stop_pct = STOP_LOSS_MIN_PCT  # 기본 최소 손절폭
