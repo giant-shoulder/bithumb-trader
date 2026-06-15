@@ -34,7 +34,6 @@ from config import (
     PULLBACK_MAX_CANDLES,
     AT_NOISE_EXIT,
     MIN_HOLD_SECONDS,
-    MAX_HOLD_MINUTES,
     FEE_RATE,
     FEE_ROUND_TRIP,
     HIGHER_TF_CANDLE, HIGHER_TF_COUNT,
@@ -490,27 +489,15 @@ class AutoTrader:
                         coins_to_sell.append((coin, pos, current_price, signal))
                         continue
                     else:
-                        # AT yellow(손실) 또는 green → 보유 유지 (WS 손절/익절 또는 60분 시간청산에 위임)
+                        # AT yellow(손실) 또는 green → 보유 유지.
+                        # 하방은 손절가가 막고(WS), 추세 꺾임은 AT red가 잡음. 손실이라도 시계만 보고
+                        # 강제청산하지 않음 - 반등 여지를 둠 (2026-06-15 사용자 결정: 시간청산 제거)
                         stop_str = f"{pos.stop_loss_price:,.0f}" if pos.stop_loss_price > 0 else "미설정"
                         take_str = f"{pos.take_profit_price:,.0f}" if pos.take_profit_price > 0 else "미설정"
                         logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
                                     f"손익={pnl_pct:+.1f}% | AT {completed_color} 보유 중 "
                                     f"| 손절={stop_str} 익절={take_str}")
                         continue
-
-            # 3. 시간 기반 청산: MAX_HOLD_MINUTES 이상 보유 + 손실 중 → 강제 청산
-            entry_dt_check = datetime.strptime(pos.entry_time, "%Y-%m-%d %H:%M:%S")
-            hold_mins = (datetime.now() - entry_dt_check).total_seconds() / 60
-            if hold_mins >= MAX_HOLD_MINUTES and current_price < pos.buy_price * (1 + FEE_ROUND_TRIP):
-                signal = {
-                    'sell': True,
-                    'reason': f'장기보유 청산 ({hold_mins:.0f}분, 수익 없음)',
-                    'is_stop_loss': False,
-                }
-                logger.info(f"[{coin}] 매입={pos.buy_price:,.0f} 현재={current_price:,.0f} "
-                            f"손익={pnl_pct:+.1f}% | {signal['reason']}")
-                coins_to_sell.append((coin, pos, current_price, signal))
-                continue
 
             # 상태 로그 (stop/take는 WS가 처리 중)
             stop_str = f"{pos.stop_loss_price:,.0f}" if pos.stop_loss_price > 0 else "미설정"
