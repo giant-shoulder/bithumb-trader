@@ -3,6 +3,7 @@
 """
 import os
 import html
+import socket
 import urllib.request
 import urllib.parse
 import json
@@ -15,7 +16,12 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 
 def send(message: str):
-    """텔레그램 메시지 전송 (실패 시 1회 재시도)"""
+    """텔레그램 메시지 전송
+
+    연결 실패(요청 미전송)만 1회 재시도. read 타임아웃은 POST가 이미 전송돼
+    텔레그램이 메시지를 수신했을 가능성이 높으므로 재시도하지 않음 → 중복 발송 방지.
+    (2026-06-16: 응답 지연으로 매 알림이 timeout→재시도되어 2통씩 전송되던 버그)
+    """
     if not BOT_TOKEN or not CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -24,11 +30,16 @@ def send(message: str):
         "text": message,
         "parse_mode": "HTML",
     }).encode()
-    for attempt in range(2):  # 최대 2회 시도
+    for attempt in range(2):  # 최대 2회 시도 (연결 실패 시에만 재시도)
         try:
             req = urllib.request.Request(url, data=data, method="POST")
-            urllib.request.urlopen(req, timeout=10)
+            resp = urllib.request.urlopen(req, timeout=30)
+            resp.read()  # 응답 본문까지 읽어 연결 정상 종료
             return  # 성공
+        except (socket.timeout, TimeoutError) as e:
+            # read 타임아웃: 요청은 이미 전송됨 → 재전송하면 중복. 한 번만 보내고 종료
+            logger.warning(f"[텔레그램 알림 응답 타임아웃, 재시도 안 함(중복 방지)] {e}")
+            return
         except Exception as e:
             if attempt == 0:
                 logger.warning(f"[텔레그램 알림 실패, 재시도] {e}")
