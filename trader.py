@@ -211,10 +211,12 @@ class AutoTrader:
                 interval = POLLING_INTERVAL_ACTIVE if self.positions else POLLING_INTERVAL_IDLE
                 label = '포지션 있음' if self.positions else '대기 중'
                 logger.info(f"다음 실행: {interval}초 후 ({label})")
-                for _ in range(interval):
+                # 0.1초 단위로 큐 처리: WS 손절 감지→매도 실행 지연을 1초→0.1초로 단축
+                # (청산 지연이 손절 슬리피지의 큰 부분 - 2026-06-19 회고: 손절가 대비 ~0.3% 추가 손실)
+                for _ in range(interval * 10):
                     if not self.is_running:
                         break
-                    time.sleep(1)
+                    time.sleep(0.1)
                     self._process_ws_sells()   # WebSocket 손절/익절 즉시 처리
                     self._process_hot_buys()   # WebSocket 급등 감지 즉시 분석
 
