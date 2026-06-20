@@ -39,6 +39,7 @@ from config import (
     HIGHER_TF_CANDLE, HIGHER_TF_COUNT,
     CONSECUTIVE_LOSS_LIMIT, CONSECUTIVE_LOSS_PAUSE_HOURS,
     TRAILING_STOP_TRIGGER_PCT, TRAILING_STOP_TRAIL_PCT,
+    STOP_LOSS_MIN_PCT, STOP_LOSS_MAX_PCT,
     BREAKEVEN_TRIGGER_PCT, BREAKEVEN_STOP_PCT, BREAKEVEN_MIN_TICKS,
     PARTIAL_TP_RR, PARTIAL_TP_RATIO,
 )
@@ -119,8 +120,9 @@ class AutoTrader:
         self._ws_monitor.start()
         logger.info("=" * 50)
         logger.info("빗섬 자동매매 시스템 시작 (AlphaTrend 리듬 단타)")
-        logger.info(f"설정: 손절 0.8~2.5% | 본전스탑 +{BREAKEVEN_TRIGGER_PCT}%→+{BREAKEVEN_STOP_PCT}% "
-                    f"| 1차익절 R:R {PARTIAL_TP_RR} {PARTIAL_TP_RATIO:.0%} + 잔량 트레일링")
+        logger.info(f"설정: 손절 {STOP_LOSS_MIN_PCT}~{STOP_LOSS_MAX_PCT}% | 본전스탑 +{BREAKEVEN_TRIGGER_PCT}%→+{BREAKEVEN_STOP_PCT}% "
+                    f"| 트레일링 +{TRAILING_STOP_TRIGGER_PCT}%(고점-{TRAILING_STOP_TRAIL_PCT}%) "
+                    f"| 1차익절 R:R {PARTIAL_TP_RR} {PARTIAL_TP_RATIO:.0%}")
         logger.info(f"설정: 최소가격 {MIN_PRICE_KRW}원 | 거래중단 {TRADING_BLOCK_START}~{TRADING_BLOCK_END}시")
         logger.info(f"설정: 최대 포지션 {MAX_CONCURRENT_POSITIONS}개 | 캔들 {BUY_CANDLE_INTERVAL}")
         logger.info("=" * 50)
