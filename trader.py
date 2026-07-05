@@ -100,6 +100,7 @@ class AutoTrader:
         self.positions: dict[str, Position] = {}
         self.sell_cooldown: dict[str, float] = {}   # coin -> cooldown_end_timestamp
         self.daily_coin_stops: dict[str, int] = {}  # coin -> 당일 손절 횟수
+        self.stop_loss_history: dict[str, list] = {}  # coin -> 손절 시각 목록 (7일 내 2회 차단용, 재시작 시 초기화)
         self.is_running = False
         self.dry_run = dry_run
         self.daily_pnl_krw = 0.0
@@ -613,6 +614,15 @@ class AutoTrader:
             stops_today = self.daily_coin_stops[coin]
             if stops_today >= DAILY_COIN_STOP_LIMIT:
                 logger.warning(f"[당일 블랙리스트] {coin} | 오늘 손절 {stops_today}회 → 오늘 재매수 금지")
+            # 7일 내 같은 코인 손절 2회 → 7일 재매수 차단 (당일 차단은 자정에 풀려
+            # 다음날 새벽 재진입이 반복됨: SLX 6/28~30 3연속 손절 -3,268원)
+            now_ts = time.time()
+            recent_stops = [t for t in self.stop_loss_history.get(coin, []) if now_ts - t < 7 * 86400]
+            recent_stops.append(now_ts)
+            self.stop_loss_history[coin] = recent_stops
+            if len(recent_stops) >= 2 and now_ts + 7 * 86400 > self.sell_cooldown.get(coin, 0):
+                self.sell_cooldown[coin] = now_ts + 7 * 86400
+                logger.warning(f"[7일 차단] {coin} | 7일 내 손절 {len(recent_stops)}회 → 7일간 재매수 금지")
 
         logger.info(f"[매도 완료] {coin} | 손익: {pnl_pct:+.1f}% ({pnl_krw:+,.0f}원) "
                     f"| 오늘 누적: {self.daily_pnl_krw:+,.0f}원 | 쿨다운: {cooldown_label}")
@@ -883,6 +893,19 @@ class AutoTrader:
                         slip_pct = (actual_price - price) / price * 100
                         logger.info(f"[{coin}] 실제 매수 체결: {actual_price:,.2f}원 "
                                     f"(주문가 대비 {slip_pct:+.2f}%) | {quantity:.6f}개 {spent:,.0f}원")
+
+            # 체결가 기준 손절폭 재검증: 진입 판정은 신호가 기준이라 매수 슬리피지(+0.3%대)만큼
+            # 실제 손절폭이 한도를 넘을 수 있음 → 손절가를 체결가 기준 한도로 상향
+            # (2026-07-05 ADA: 신호가 기준 한도 통과 → 체결가 301원 기준 1.66%로 벌어져 -1.74% 손절)
+            if stop_loss_price > 0:
+                cap_price = actual_price * (1 - STOP_LOSS_MAX_PCT / 100)
+                if stop_loss_price < cap_price:
+                    tick = _tick_size(actual_price)
+                    capped = math.ceil(cap_price / tick) * tick
+                    raw_pct = (1 - stop_loss_price / actual_price) * 100
+                    logger.info(f"[{coin}] 손절가 재캡: {stop_loss_price:,.0f} → {capped:,.0f}원 "
+                                f"(체결가 기준 손절폭 {raw_pct:.2f}% > 한도 {STOP_LOSS_MAX_PCT}%)")
+                    stop_loss_price = capped
 
             # 1차 부분 익절가: R:R 1.0 + 왕복 수수료 (실제 체결가 기준)
             risk = actual_price - stop_loss_price
