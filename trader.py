@@ -26,7 +26,7 @@ from config import (
     MIN_POSITION_KRW,
     PRIORITY_COINS,
     MAX_CONCURRENT_POSITIONS,
-    MIN_PRICE_KRW, MAX_SPREAD_PCT,
+    MIN_PRICE_KRW, MAX_SPREAD_PCT, MIN_BID_DEPTH_KRW,
     TRADING_BLOCK_START, TRADING_BLOCK_END,
     BUY_CANDLE_INTERVAL, BUY_CANDLE_COUNT,
     COIN_BLACKLIST,
@@ -851,6 +851,14 @@ class AutoTrader:
                 if spread_pct > MAX_SPREAD_PCT:
                     logger.info(f"[매수 차단] {coin} | 스프레드 {spread_pct:.1f}% > {MAX_SPREAD_PCT}% "
                                 f"(매수1={bid1:,.0f} 매도1={ask1:,.0f})")
+                    return
+                # 매수벽(호가 깊이) 필터: 얇은 책에서는 급락 시 손절 시장가가 수 틱을 뚫고 체결됨
+                # (2026-07-08: RE 매수벽 20M원 → 손절 -0.37% 슬리피지, SOL/ETH급 0.6~1.5B는 0.1% 미만)
+                bid_depth = sum(float(u['bid_price']) * float(u['bid_size']) for u in units
+                                if float(u['bid_price']) >= bid1 * 0.99)
+                if bid_depth < MIN_BID_DEPTH_KRW:
+                    logger.info(f"[매수 차단] {coin} | 매수벽 부족 ({bid_depth/1e6:.0f}M원 "
+                                f"< 최소 {MIN_BID_DEPTH_KRW/1e6:.0f}M원, 손절 슬리피지 위험)")
                     return
 
         if coin in self.positions:
