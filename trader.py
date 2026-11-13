@@ -128,6 +128,34 @@ class AutoTrader:
         logger.info(f"설정: 최대 포지션 {MAX_CONCURRENT_POSITIONS}개 | 캔들 {BUY_CANDLE_INTERVAL}")
         logger.info("=" * 50)
         self._load_existing_positions()
+        self._fee_check_date = datetime.now(KST).date()
+        self._check_fee_rate()
+
+    def _check_fee_rate(self):
+        """실제 적용 수수료율 조회 → 설정(FEE_RATE)과 다르면 경고 (수수료 쿠폰 만료 감지)
+
+        쿠폰은 1개월 단위라 만료되면 조용히 기본 0.25%로 복귀함.
+        (2026-11-14 회고: 7/11 쿠폰 만료 후 4개월간 0.25% 부과 → 10~11월 수수료만
+        약 1.2만원으로 거래 손실 -2,277원의 5배. 본전스탑 +0.3% 익절이 전부 실질 손실이었음)
+        """
+        try:
+            r = self.api._private_get('/v1/orders/chance', {'market': 'KRW-ETH'})
+            if not isinstance(r, dict) or 'bid_fee' not in r:
+                logger.warning(f"수수료율 조회 실패: {r}")
+                return
+            bid_fee, ask_fee = float(r['bid_fee']), float(r['ask_fee'])
+            actual = max(bid_fee, ask_fee)
+            if actual > FEE_RATE * 1.5:
+                msg = (f"⚠️ 수수료 쿠폰 만료 의심!\n"
+                       f"실제 수수료 {actual:.2%} (설정 {FEE_RATE:.2%})\n"
+                       f"왕복 {actual * 2:.2%}면 본전스탑/트레일링 익절이 실질 손실입니다.\n"
+                       f"빗썸에서 수수료 쿠폰을 재구매하세요.")
+                logger.warning(msg.replace('\n', ' | '))
+                notifier.send(msg)
+            else:
+                logger.info(f"수수료율 확인: 매수 {bid_fee:.3%} / 매도 {ask_fee:.3%} (설정 {FEE_RATE:.3%})")
+        except Exception as e:
+            logger.warning(f"수수료율 체크 오류: {e}")
 
     def _load_existing_positions(self):
         """시작 시 실제 보유 코인을 포지션으로 로드"""
@@ -177,6 +205,12 @@ class AutoTrader:
                 logger.info(f"\n{'='*40}")
                 now_kst = datetime.now(KST)
                 logger.info(f"[{now_kst.strftime('%H:%M:%S')}] 전략 실행 중...")
+
+                # 일일 1회 수수료율 체크 (쿠폰 만료 감지)
+                today_kst = now_kst.date()
+                if today_kst != self._fee_check_date:
+                    self._fee_check_date = today_kst
+                    self._check_fee_rate()
 
                 # 일일 손실 한도 체크
                 if not self._check_daily_loss_limit():
