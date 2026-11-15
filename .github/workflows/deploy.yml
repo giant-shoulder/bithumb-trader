@@ -15,6 +15,7 @@ jobs:
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           script: |
+            set -e
             cd ~/bithumb-trader
             git pull
             pip3 install -r requirements.txt -q
