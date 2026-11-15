@@ -129,33 +129,46 @@ class AutoTrader:
         logger.info("=" * 50)
         self._load_existing_positions()
         self._fee_check_date = datetime.now(KST).date()
+        self._fee_alert_date = None  # paid_fee 경보 텔레그램 발송일 (하루 1회 제한)
         self._check_fee_rate()
 
     def _check_fee_rate(self):
-        """실제 적용 수수료율 조회 → 설정(FEE_RATE)과 다르면 경고 (수수료 쿠폰 만료 감지)
+        """명목 수수료율 조회 (참고 로그 전용 — 경보 없음)
 
-        쿠폰은 1개월 단위라 만료되면 조용히 기본 0.25%로 복귀함.
-        (2026-11-14 회고: 7/11 쿠폰 만료 후 4개월간 0.25% 부과 → 10~11월 수수료만
-        약 1.2만원으로 거래 손실 -2,277원의 5배. 본전스탑 +0.3% 익절이 전부 실질 손실이었음)
+        주의: orders/chance는 수수료 쿠폰이 반영되지 않은 명목 요율을 반환함.
+        (2026-11-16 테스트 매매로 검증: 조회는 0.25%인데 실체결 paid_fee는 0.04%)
+        실제 적용 요율 감시는 체결 주문의 paid_fee 기반 _verify_real_fee()가 담당.
         """
         try:
             r = self.api._private_get('/v1/orders/chance', {'market': 'KRW-ETH'})
-            if not isinstance(r, dict) or 'bid_fee' not in r:
-                logger.warning(f"수수료율 조회 실패: {r}")
-                return
-            bid_fee, ask_fee = float(r['bid_fee']), float(r['ask_fee'])
-            actual = max(bid_fee, ask_fee)
-            if actual > FEE_RATE * 1.5:
-                msg = (f"⚠️ 수수료 쿠폰 만료 의심!\n"
-                       f"실제 수수료 {actual:.2%} (설정 {FEE_RATE:.2%})\n"
-                       f"왕복 {actual * 2:.2%}면 본전스탑/트레일링 익절이 실질 손실입니다.\n"
-                       f"빗썸에서 수수료 쿠폰을 재구매하세요.")
-                logger.warning(msg.replace('\n', ' | '))
-                notifier.send(msg)
+            if isinstance(r, dict) and 'bid_fee' in r:
+                logger.info(f"명목 수수료율(쿠폰 미반영 값): 매수 {float(r['bid_fee']):.3%} "
+                            f"/ 매도 {float(r['ask_fee']):.3%} | 설정 {FEE_RATE:.3%}")
             else:
-                logger.info(f"수수료율 확인: 매수 {bid_fee:.3%} / 매도 {ask_fee:.3%} (설정 {FEE_RATE:.3%})")
+                logger.warning(f"수수료율 조회 실패: {r}")
         except Exception as e:
             logger.warning(f"수수료율 체크 오류: {e}")
+
+    def _verify_real_fee(self, coin: str, paid_fee: float, executed_funds: float):
+        """체결 주문의 실납부 수수료(paid_fee)로 쿠폰 만료 감지 (텔레그램 알림은 하루 1회)
+
+        쿠폰은 1개월 단위로 만료되며 만료 시 조용히 기본 0.25%로 복귀함 (다음 만료 2026-12-14).
+        (2026-11-14 회고: 7/11 만료 후 4개월간 0.25% 부과 → 10~11월 수수료 1.2만원
+        = 거래 손실의 5배. 본전스탑 +0.3% 익절이 전부 실질 손실이었음)
+        """
+        if executed_funds <= 0 or paid_fee < 0:
+            return
+        rate = paid_fee / executed_funds
+        if rate > FEE_RATE * 1.5:
+            logger.warning(f"[{coin}] 실체결 수수료 {rate:.3%} > 설정 {FEE_RATE:.3%} — 쿠폰 만료 의심")
+            today = datetime.now(KST).date()
+            if self._fee_alert_date != today:
+                self._fee_alert_date = today
+                notifier.send(f"⚠️ 수수료 쿠폰 만료 의심!\n"
+                              f"{coin} 실체결 수수료 {rate:.2%} (설정 {FEE_RATE:.2%})\n"
+                              f"빗썸에서 수수료 쿠폰을 재구매하세요.")
+        else:
+            logger.info(f"[{coin}] 실체결 수수료 {rate:.3%} (정상)")
 
     def _load_existing_positions(self):
         """시작 시 실제 보유 코인을 포지션으로 로드"""
@@ -603,6 +616,7 @@ class AutoTrader:
                     if executed_vol > 0:
                         actual_exec_price = executed_funds / executed_vol
                     logger.info(f"[{coin}] 실제 체결: {executed_funds:,.0f}원")
+                    self._verify_real_fee(coin, float(order_detail.get('paid_fee', 0) or 0), executed_funds)
 
         sell_amount = actual_amount if actual_amount else sell_qty * price
         # 수수료 차감: 매수 0.04% + 매도 0.04% = 왕복 0.08% (부분 매도 시 해당 비율분만)
@@ -935,6 +949,7 @@ class AutoTrader:
                         slip_pct = (actual_price - price) / price * 100
                         logger.info(f"[{coin}] 실제 매수 체결: {actual_price:,.2f}원 "
                                     f"(주문가 대비 {slip_pct:+.2f}%) | {quantity:.6f}개 {spent:,.0f}원")
+                        self._verify_real_fee(coin, float(order_detail.get('paid_fee', 0) or 0), executed_funds)
 
             # 체결가 기준 손절폭 재검증: 진입 판정은 신호가 기준이라 매수 슬리피지(+0.3%대)만큼
             # 실제 손절폭이 한도를 넘을 수 있음 → 손절가를 체결가 기준 한도로 상향
