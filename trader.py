@@ -729,13 +729,13 @@ class AutoTrader:
                 logger.info(f"[텔레그램 탈락] {coin} | 캔들 조회 실패")
                 continue
 
-            # 상위 타임프레임(30분봉) AT 필터 (yellow 시 통과, red만 차단)
+            # 상위 타임프레임(30분봉) AT 필터 - green만 진입 허용 (리듬 경로와 동일 기준, 2026-11-21 회고)
             df_htf = self.api.get_ohlcv(coin, interval=HIGHER_TF_CANDLE, count=HIGHER_TF_COUNT)
             if df_htf is not None:
                 at_htf = self.strategy.calc_alpha_trend(df_htf)
                 htf_color = at_htf['at_color'].iloc[-2]
-                if htf_color == 'red':
-                    logger.info(f"[텔레그램 탈락] {coin} | {HIGHER_TF_CANDLE} AT red (하락 추세)")
+                if htf_color != 'green':
+                    logger.info(f"[텔레그램 탈락] {coin} | {HIGHER_TF_CANDLE} AT {htf_color} (green 아님 → 진입 금지)")
                     continue
 
             # AT green 안정 확인 (yellow/red 진입 차단 - 즉시 노이즈 청산 방지)
@@ -829,17 +829,19 @@ class AutoTrader:
                 logger.debug(f"[탈락] {coin} | 가격 {price:.0f}원 < 최소 {MIN_PRICE_KRW}원")
                 continue
 
-            # 상위 타임프레임(30분봉) AT 필터 - 하락장 진입 차단 (yellow 시 5분봉으로 보완)
+            # 상위 타임프레임(30분봉) AT 필터 - green만 진입 허용
+            # yellow + 5분봉 거래량 150% 보완 경로 제거 (2026-11-21 회고):
+            # 10/1~11/21 63트립 중 보완 진입 46건 승률 46% 합계 -6,333원
+            # vs green 진입 16건 승률 56% -231원. 하락장 데드캣 반등 진입의 주범이 보완 경로였음
             df_htf = self.api.get_ohlcv(coin, interval=HIGHER_TF_CANDLE, count=HIGHER_TF_COUNT)
             if df_htf is None:
                 logger.info(f"[탈락] {coin} | {HIGHER_TF_CANDLE} 캔들 조회 실패")
                 continue
             at_htf = self.strategy.calc_alpha_trend(df_htf)
             htf_color = at_htf['at_color'].iloc[-2]  # 마지막 완성 캔들
-            if htf_color == 'red':
-                logger.info(f"[탈락] {coin} | {HIGHER_TF_CANDLE} AT red (하락 추세)")
+            if htf_color != 'green':
+                logger.info(f"[탈락] {coin} | {HIGHER_TF_CANDLE} AT {htf_color} (green 아님 → 진입 금지)")
                 continue
-            htf_relaxed = (htf_color == 'yellow')  # yellow는 5분봉 조건 강화로 보완
 
             df = self.api.get_ohlcv(coin, interval=BUY_CANDLE_INTERVAL, count=BUY_CANDLE_COUNT)
             if df is None:
@@ -847,16 +849,7 @@ class AutoTrader:
 
             signal = self.strategy.check_rhythm_entry(coin, df, current_price=price)
             if signal['signal']:
-                if htf_relaxed:
-                    # 30분봉 yellow → 5분봉 거래량 150% 이상 요구 (추가 안전장치)
-                    vol_data = df['volume'].iloc[-21:-1]
-                    cur_vol = df['volume'].iloc[-1]
-                    if cur_vol < vol_data.mean() * 1.5:
-                        logger.info(f"[탈락] {coin} | 30m AT yellow + 거래량 부족 ({cur_vol:.0f} < 150% avg)")
-                        continue
-                    logger.info(f"[리듬 신호] {coin} | {signal['reason']} (30m AT yellow, 거래량 보완)")
-                else:
-                    logger.info(f"[리듬 신호] {coin} | {signal['reason']}")
+                logger.info(f"[리듬 신호] {coin} | {signal['reason']}")
                 buy_candidates.append((coin, signal, coin_data))
             else:
                 logger.info(f"[탈락] {coin} | {signal['reason']}")
